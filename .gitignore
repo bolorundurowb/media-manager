@@ -1,0 +1,27 @@
+﻿# Cargo
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock should be tracked if this is an executable (binary) project. 
+# If it's a library, uncomment the line below to ignore it.
+# Cargo.lock
+
+# egui web builds (Trunk output)
+dist/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
