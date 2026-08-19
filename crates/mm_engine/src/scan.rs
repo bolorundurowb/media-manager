@@ -125,34 +125,41 @@ fn default_ignore_patterns() -> Vec<&'static str> {
 }
 
 fn glob_match(pat: &str, s: &str) -> bool {
-    // Tiny glob: * matches any sequence, ? matches one char.
-    let mut pchars = pat.chars().peekable();
-    let mut schars = s.chars().peekable();
-    while let Some(pc) = pchars.next() {
-        match pc {
-            '*' => {
-                let next = pchars.peek().copied();
-                if next.is_none() {
-                    return true;
-                }
-                while let Some(sc) = schars.peek() {
-                    if *sc == next.unwrap() {
-                        break;
-                    }
-                    schars.next();
-                }
-            }
-            '?' => {
-                schars.next();
-            }
-            c => {
-                if schars.next() != Some(c) {
-                    return false;
-                }
-            }
+    // Tiny glob: * matches any sequence, ? matches one char. Backtracking is
+    // required for correctness: `*` greedily trying only the *first*
+    // occurrence of the next literal char (with no way to retry further
+    // along) fails on inputs with more than one occurrence of that char, e.g.
+    // `*.tmp` against `Show.Name.S01E01.mkv.tmp` — exactly the multi-dot
+    // filenames download clients produce, which these ignore patterns exist
+    // to catch. This uses the standard two-pointer wildcard algorithm: on a
+    // literal/`?` mismatch, retry from just after the most recent `*`,
+    // consuming one more character of `s` than last time.
+    let p: Vec<char> = pat.chars().collect();
+    let s: Vec<char> = s.chars().collect();
+    let (mut pi, mut si) = (0usize, 0usize);
+    let mut star: Option<usize> = None; // index in `p` just after the last '*' seen
+    let mut star_si = 0usize; // index in `s` to resume matching from after that '*'
+
+    while si < s.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == s[si]) {
+            pi += 1;
+            si += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi + 1);
+            star_si = si;
+            pi += 1;
+        } else if let Some(resume_p) = star {
+            pi = resume_p;
+            star_si += 1;
+            si = star_si;
+        } else {
+            return false;
         }
     }
-    schars.next().is_none()
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
 }
 
 #[cfg(test)]
@@ -164,5 +171,20 @@ mod tests {
         assert!(glob_match("*.part", "movie.part"));
         assert!(glob_match(".Trash*", ".Trash-100"));
         assert!(!glob_match("*.part", "movie.mkv"));
+    }
+
+    #[test]
+    fn glob_matching_multi_dot_filenames() {
+        // Download-client artefacts commonly have more than one dot before
+        // the ignored extension — the matcher must backtrack past the first
+        // occurrence of '.' to find one that lets the rest of the pattern
+        // match, not give up after trying only the first.
+        assert!(glob_match("*.part", "movie.name.part"));
+        assert!(glob_match(
+            "*.tmp",
+            "Show.Name.S01E01.1080p.mkv.tmp"
+        ));
+        assert!(glob_match("*.!qB", "movie.name.mkv.!qB"));
+        assert!(!glob_match("*.tmp", "Show.Name.S01E01.1080p.mkv"));
     }
 }

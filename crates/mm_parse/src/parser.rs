@@ -7,11 +7,10 @@ use mm_core::{Confidence, Source};
 
 use crate::extractors::{
     AudioFormatExtractor, Claim, EditionExtractor, Extractor, HdrExtractor, ParseField,
-    ReleaseGroupExtractor, ResolutionExtractor, SourceExtractor, VideoCodecExtractor,
-    YearExtractor,
+    ResolutionExtractor, SourceExtractor, VideoCodecExtractor, YearExtractor,
 };
 use crate::model::{MediaParse, ParseOptions, ParsedMovie, known};
-use crate::tokens::{normalise, tokenize};
+use crate::tokens::{normalise, release_group_of, tokenize};
 
 /// Parse a filename as a movie, returning the structured fields.
 pub fn parse_movie_filename(filename: &str, opts: &ParseOptions) -> ParsedMovie {
@@ -39,7 +38,10 @@ pub fn parse_movie_filename(filename: &str, opts: &ParseOptions) -> ParsedMovie 
         // words (e.g. "No Country for Old Men"). Subtitle language is handled
         // separately during association (§5.4).
         Box::new(YearExtractor::new(opts.min_year, opts.max_year)),
-        Box::new(ReleaseGroupExtractor),
+        // Release group is NOT handled via the extractor/claim mechanism: the
+        // tokeniser strips it from the string before tokens ever exist (see
+        // `tokens::normalise_and_capture`), so no extractor operating on
+        // `tokens` could ever observe it. It's captured directly below.
     ];
 
     for ex in extractors {
@@ -66,6 +68,10 @@ pub fn parse_movie_filename(filename: &str, opts: &ParseOptions) -> ParsedMovie 
     let title_text = title_text.trim().to_string();
     if !title_text.is_empty() {
         movie.title = known(title_text, Source::Filename, Confidence::Medium);
+    }
+
+    if let Some(group) = release_group_of(filename) {
+        movie.release_group = known(group, Source::Filename, Confidence::Low);
     }
 
     movie
@@ -157,5 +163,20 @@ mod tests {
         let m = movie("Inception (2010) Director's Cut 1080p.mkv");
         assert_eq!(m.title.as_value().unwrap(), "Inception");
         assert_eq!(m.edition.as_value().unwrap(), "Director's Cut");
+    }
+
+    #[test]
+    fn extracts_dash_release_group() {
+        let m = movie("Se7en.1995.1080p.BluRay.x264-GROUP.mkv");
+        assert_eq!(m.title.as_value().unwrap(), "Se7en");
+        assert_eq!(m.release_group.as_value().unwrap(), "GROUP");
+    }
+
+    #[test]
+    fn extracts_bracketed_release_group() {
+        let m = movie("Whiplash.2014.720p.WEB-DL.AV1.TrueHD[YTS.MX].mkv");
+        assert_eq!(m.title.as_value().unwrap(), "Whiplash");
+        assert_eq!(m.source.as_value().unwrap(), "WEB-DL");
+        assert_eq!(m.release_group.as_value().unwrap(), "YTS.MX");
     }
 }

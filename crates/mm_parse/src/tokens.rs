@@ -3,8 +3,6 @@
 //! Normalises separators, preserves bracketed/parenthesised spans, and strips
 //! a trailing release-group token.
 
-use regex::Regex;
-
 /// A token with its span in the normalised string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
@@ -29,12 +27,24 @@ impl Token {
 
 /// Normalise a media filename into a token stream.
 pub fn tokenize(name: &str) -> Vec<Token> {
-    let normalised = normalise(name);
+    let (normalised, _group) = normalise_and_capture(name);
     split_tokens(&normalised)
 }
 
 /// Strip extension, release group suffix, and collapse separators.
 pub fn normalise(name: &str) -> String {
+    normalise_and_capture(name).0
+}
+
+/// The trailing release-group token stripped during normalisation, if any
+/// (§3.1). Captured separately from the token stream because the group is
+/// removed from the string *before* tokenisation ever runs, so no extractor
+/// operating on `tokens` can ever see it.
+pub fn release_group_of(name: &str) -> Option<String> {
+    normalise_and_capture(name).1
+}
+
+fn normalise_and_capture(name: &str) -> (String, Option<String>) {
     // 1. Strip extension.
     let base = match name.rfind('.') {
         Some(i) => &name[..i],
@@ -42,7 +52,7 @@ pub fn normalise(name: &str) -> String {
     };
 
     // 2. Strip trailing release-group token: `-RARBG`, `[YTS.MX]`, etc.
-    let base = strip_release_group(base);
+    let (base, group) = strip_release_group(base);
 
     // 3. Unify separators to spaces. Keep brackets/parentheses intact.
     let mut out = String::with_capacity(base.len());
@@ -55,13 +65,60 @@ pub fn normalise(name: &str) -> String {
     }
 
     // 4. Collapse whitespace.
-    collapse_whitespace(&out)
+    (collapse_whitespace(&out), group)
 }
 
-fn strip_release_group(s: &str) -> String {
-    static RE_DASH: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let dash = RE_DASH.get_or_init(|| Regex::new(r"-[A-Za-z0-9]{2,}$").unwrap());
-    dash.replace(s, "").into_owned()
+/// Strip a trailing release-group token from a name that's already had its
+/// extension removed. Handles both the dash-suffix form (`-RARBG`) and the
+/// bracketed form (`[YTS.MX]`), guarding against two look-alikes that are
+/// *not* release groups:
+///   - a trailing bracketed year, e.g. `(2010)`/`[2010]`
+///   - a trailing known vocab tag that happens to contain a dash or sits
+///     inside brackets, e.g. `WEB-DL`, `DTS-HD`, `[x264]`
+fn strip_release_group(s: &str) -> (String, Option<String>) {
+    // Bracketed form: `[GROUP]` at the very end.
+    if let Some(rest) = s.strip_suffix(']') {
+        if let Some(open) = rest.rfind('[') {
+            let inner = &rest[open + 1..];
+            if !inner.is_empty() && inner.parse::<u16>().is_err() && !is_reserved_word(inner) {
+                let stripped = rest[..open]
+                    .trim_end_matches(['.', '_', '+', ' '])
+                    .to_string();
+                return (stripped, Some(inner.to_string()));
+            }
+        }
+    }
+
+    // Dash-suffix form: `-RARBG`.
+    if let Some(dash) = s.rfind('-') {
+        let candidate = &s[dash + 1..];
+        let looks_like_group =
+            candidate.len() >= 2 && candidate.chars().all(|c| c.is_ascii_alphanumeric());
+        if looks_like_group {
+            // The whole tag since the previous separator, e.g. `WEB-DL` or
+            // `x264-SPARKS` — checked as a unit so a real vocab tag that
+            // contains a dash is never split in half.
+            let seg_start = s[..dash]
+                .rfind(['.', '_', '+'])
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let whole_tag = &s[seg_start..];
+            if !is_reserved_word(whole_tag) {
+                let stripped = s[..dash]
+                    .trim_end_matches(['.', '_', '+', ' '])
+                    .to_string();
+                return (stripped, Some(candidate.to_string()));
+            }
+        }
+    }
+
+    (s.to_string(), None)
+}
+
+fn is_reserved_word(tag: &str) -> bool {
+    crate::vocab::all_reserved_words()
+        .iter()
+        .any(|w| w.eq_ignore_ascii_case(tag))
 }
 
 fn collapse_whitespace(s: &str) -> String {
@@ -130,5 +187,33 @@ mod tests {
     fn strips_release_group() {
         let toks = tokenize("Movie.2020.1080p-RARBG.mkv");
         assert!(!toks.iter().any(|t| t.text == "RARBG"));
+        assert_eq!(release_group_of("Movie.2020.1080p-RARBG.mkv").as_deref(), Some("RARBG"));
+    }
+
+    #[test]
+    fn strips_bracketed_release_group() {
+        let name = "Whiplash.2014.720p.WEB-DL.AV1.TrueHD[YTS.MX].mkv";
+        assert_eq!(release_group_of(name).as_deref(), Some("YTS.MX"));
+        let toks = tokenize(name);
+        assert!(!toks.iter().any(|t| t.text.contains("YTS")));
+        // WEB-DL, a legitimate dash-containing source tag, must survive.
+        assert!(toks.iter().any(|t| t.text == "WEB-DL"));
+    }
+
+    #[test]
+    fn bracketed_year_is_not_a_release_group() {
+        assert_eq!(release_group_of("Inception (2010).mkv"), None);
+        assert_eq!(release_group_of("Movie.[2010].mkv"), None);
+    }
+
+    #[test]
+    fn trailing_vocab_tag_is_not_a_release_group() {
+        // A source tag ending the name (no group after it) must not be
+        // mistaken for a release group, even though it contains a dash.
+        assert_eq!(release_group_of("Movie.2020.1080p.WEB-DL.mkv"), None);
+        assert_eq!(
+            release_group_of("Spirited Away (2001) [1080p] [BluRay] [x264].mkv"),
+            None
+        );
     }
 }

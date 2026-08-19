@@ -385,7 +385,12 @@ fn choose_sidecar_parent(
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
 
-    // Prefer longest stem-prefix match.
+    // Gate: only a video whose stem is a prefix of the sidecar's stem is
+    // name-evidence for association at all (§5.4 "name-evidence gate then
+    // ranked score"). A single video in the directory is *not* an automatic
+    // match — a differently-named orphan sidecar must fall through to
+    // `NeedsReview`, not be silently attached to whatever video happens to be
+    // there.
     let mut best: Option<(usize, usize)> = None;
     for &idx in candidates {
         let video_stem = items[idx]
@@ -394,14 +399,15 @@ fn choose_sidecar_parent(
             .and_then(|s| s.to_str())
             .map(|s| s.to_ascii_lowercase())
             .unwrap_or_default();
-        if sidecar_stem.starts_with(&video_stem) {
+        if !video_stem.is_empty() && sidecar_stem.starts_with(&video_stem) {
+            // Score: longest matching stem wins.
             let len = video_stem.len();
             if best.is_none_or(|(_, bl)| len > bl) {
                 best = Some((idx, len));
             }
         }
     }
-    best.map(|(idx, _)| idx).or_else(|| Some(candidates[0]))
+    best.map(|(idx, _)| idx)
 }
 
 fn detect_case_rename(
@@ -421,5 +427,50 @@ trait ReadinessExt {
 impl ReadinessExt for Readiness {
     fn is_ready(&self) -> bool {
         matches!(self, Readiness::Ready)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(id: u64, file_name: &str) -> PlanItemInternal {
+        PlanItemInternal {
+            id: ItemId::new(id),
+            source: PathBuf::from(format!("/movies/{file_name}")),
+            relative: PathBuf::from(file_name),
+            class: FileClass::Video,
+            parsed: None,
+            resolved: None,
+            movie_id: MovieId::new(Norm::empty()),
+            destination: None,
+            destination_relative: None,
+            action: Action::NoOp,
+            readiness: Readiness::Ready,
+        }
+    }
+
+    #[test]
+    fn sidecar_matches_longest_stem_prefix() {
+        let items = vec![
+            item(0, "Inception.2010.1080p.mkv"),
+            item(1, "Inception.2010.mkv"),
+        ];
+        let mut sidecar = item(2, "Inception.2010.1080p.en.srt");
+        sidecar.class = FileClass::Subtitle;
+        let chosen = choose_sidecar_parent(&sidecar, &[0, 1], &items);
+        assert_eq!(chosen, Some(0));
+    }
+
+    #[test]
+    fn orphan_sidecar_with_no_stem_match_is_not_associated() {
+        // A single video in the directory is not itself evidence — the gate
+        // must reject a sidecar whose name shares no prefix with it, rather
+        // than falling back to "the only candidate".
+        let items = vec![item(0, "Some Other Movie.2019.mkv")];
+        let mut sidecar = item(1, "Unrelated.Subtitle.en.srt");
+        sidecar.class = FileClass::Subtitle;
+        let chosen = choose_sidecar_parent(&sidecar, &[0], &items);
+        assert_eq!(chosen, None);
     }
 }

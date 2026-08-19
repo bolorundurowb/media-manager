@@ -233,26 +233,14 @@ impl Extractor for LanguageExtractor {
 }
 
 // ---------------------------------------------------------------------------
-// Release-group extractor (for completeness; tokenisation already strips it).
+// Release group is deliberately *not* an `Extractor` here. `tokens::normalise`
+// strips it from the string before tokens ever exist (§3.1), so no extractor
+// operating on `tokens`/`normalised` could ever observe it — an earlier
+// implementation tried exactly that (checking `tokens.last()` for a `-`
+// prefix) and was always a no-op as a result. `parser::parse_movie_filename`
+// calls `tokens::release_group_of` directly instead. `ParseField::ReleaseGroup`
+// stays defined for `set_field`'s exhaustive match / future use.
 // ---------------------------------------------------------------------------
-
-pub struct ReleaseGroupExtractor;
-
-impl Extractor for ReleaseGroupExtractor {
-    fn extract(&self, tokens: &[Token], _normalised: &str) -> Option<Claim> {
-        if let Some(last) = tokens.last() {
-            if last.text.starts_with('-') && last.text.len() > 1 {
-                return Some(Claim::new(
-                    ParseField::ReleaseGroup,
-                    last.text[1..].to_string(),
-                    last.start,
-                    last.end,
-                ));
-            }
-        }
-        None
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -15,7 +15,7 @@ use std::time::SystemTime;
 
 use crate::fs::FileSystem;
 use crate::fs::{CancelToken, DirEntry, FileId, FileMeta, Hash, ReadDirIter};
-use crate::volume::{NoReplaceStrategy, VolumeSemantics};
+use crate::volume::{ComponentLimit, NoReplaceStrategy, VolumeSemantics};
 
 /// The production filesystem.
 #[derive(Debug, Default, Clone)]

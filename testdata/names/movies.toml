@@ -164,6 +164,16 @@ year = 2014
 resolution = "1080p"
 source = "BluRay"
 video_codec = "x264"
+release_group = "SPARKS"
+
+[[case]]
+name = "Whiplash.2014.720p.WEB-DL.AV1.TrueHD[YTS.MX].mkv"
+title = "Whiplash"
+year = 2014
+resolution = "720p"
+source = "WEB-DL"
+video_codec = "AV1"
+release_group = "YTS.MX"
 
 [[case]]
 name = "12.Angry.Men.1957.1080p.BluRay.x264.mkv"
