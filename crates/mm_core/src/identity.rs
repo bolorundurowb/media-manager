@@ -56,11 +56,9 @@ fn normalise_key(s: &str, opts: NormOptions) -> String {
         if ch.is_alphanumeric() {
             out.push(ch);
             prev_space = false;
-        } else if ch.is_whitespace() || is_collapsible_punct(ch) {
-            if !prev_space {
-                out.push(' ');
-                prev_space = true;
-            }
+        } else if (ch.is_whitespace() || is_collapsible_punct(ch)) && !prev_space {
+            out.push(' ');
+            prev_space = true;
         }
         // else: drop other punctuation entirely
     }
@@ -105,8 +103,8 @@ fn strip_leading_article(s: &str) -> &str {
     for art in [
         "the ", "a ", "an ", "le ", "la ", "les ", "el ", "los ", "las ", "der ", "die ", "das ",
     ] {
-        if s.starts_with(art) {
-            return &s[art.len()..];
+        if let Some(rest) = s.strip_prefix(art) {
+            return rest;
         }
     }
     s

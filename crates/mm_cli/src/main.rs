@@ -3,7 +3,7 @@
 //! Phase 2 implements `scan`, `plan`, and `organize --dry-run` for movies,
 //! plus `config print`/`path`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -139,7 +139,7 @@ fn init_tracing(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn cmd_scan(_cfg: &Config, dir: &PathBuf, kind: MediaKind, json: bool) -> Result<()> {
+fn cmd_scan(_cfg: &Config, dir: &Path, kind: MediaKind, json: bool) -> Result<()> {
     ensure_dir(dir)?;
     let fs = RealFs::new();
     let planner = Planner::new(&fs, dir, kind, _cfg)?;
@@ -161,7 +161,7 @@ fn cmd_scan(_cfg: &Config, dir: &PathBuf, kind: MediaKind, json: bool) -> Result
 
 fn cmd_plan(
     _cfg: &Config,
-    dir: &PathBuf,
+    dir: &Path,
     kind: MediaKind,
     json: bool,
     output: Option<PathBuf>,
@@ -185,7 +185,7 @@ fn cmd_plan(
 
 fn cmd_organize(
     _cfg: &Config,
-    dir: &PathBuf,
+    dir: &Path,
     kind: MediaKind,
     dry_run: bool,
     from_plan: Option<PathBuf>,
@@ -231,7 +231,7 @@ fn cmd_config(cfg: &Config, action: ConfigAction) -> Result<()> {
     Ok(())
 }
 
-fn ensure_dir(dir: &PathBuf) -> Result<()> {
+fn ensure_dir(dir: &std::path::Path) -> Result<()> {
     if !dir.is_dir() {
         bail!("{} is not a directory", dir.display());
     }

@@ -183,21 +183,16 @@ impl<T> Field<T> {
 
 /// Minimum-source gate used by the router (§2.1). A field below the minimum
 /// rank produces [`crate::Readiness::NeedsReview`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MinSource {
+    /// §7 config: min_confidence = "medium"; the source floor is "at least
+    /// the filename told us something".
+    #[default]
     Filename,
     ParentDir,
     Nfo,
     Provider,
     EmbeddedTag,
     ContainerHeader,
-}
-
-impl Default for MinSource {
-    fn default() -> Self {
-        // §7 config: min_confidence = "medium"; the source floor is "at least
-        // the filename told us something".
-        MinSource::Filename
-    }
 }

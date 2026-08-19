@@ -64,10 +64,8 @@ pub fn sanitise_component(name: &str, map: &SanitiseMap, limit: ComponentLimit) 
     s = collapse_whitespace(&s);
 
     // 4. Strip trailing dots and spaces (applied *before* reserved-name check).
-    s = s
-        .trim_end_matches(|c: char| c == '.' || c == ' ')
-        .to_string();
-    s = s.trim_start_matches(|c: char| c == ' ').to_string();
+    s = s.trim_end_matches(['.', ' ']).to_string();
+    s = s.trim_start_matches(' ').to_string();
 
     // 5. Reserved device-name check (Windows). The rule is the name up to the
     //    first period, case-insensitively. Applied after trailing stripping so
@@ -83,9 +81,7 @@ pub fn sanitise_component(name: &str, map: &SanitiseMap, limit: ComponentLimit) 
     if !limit.fits(&s) {
         s = limit.truncate(&s);
         // re-strip trailing dots after truncation
-        s = s
-            .trim_end_matches(|c: char| c == '.' || c == ' ')
-            .to_string();
+        s = s.trim_end_matches(['.', ' ']).to_string();
         // reserved-name check again post-truncation (paranoia)
         if is_reserved_device_name(&s) {
             insert_reserved_suffix(&mut s);

@@ -186,16 +186,10 @@ impl Default for Cleanup {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Providers {
     pub enabled: bool,
-}
-
-impl Default for Providers {
-    fn default() -> Self {
-        Providers { enabled: false }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

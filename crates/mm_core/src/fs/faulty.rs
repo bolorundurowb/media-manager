@@ -111,7 +111,7 @@ impl<F: FileSystem> FaultyFs<F> {
         let idx = self.tick();
         if let Some(n) = *self.hard_fail_at.lock().unwrap() {
             if idx == n {
-                return Some(io::Error::new(io::ErrorKind::Other, "hard fail at op n"));
+                return Some(io::Error::other("hard fail at op n"));
             }
         }
         let faults = self.faults.lock().unwrap();

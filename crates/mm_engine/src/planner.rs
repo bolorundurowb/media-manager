@@ -352,7 +352,7 @@ impl<'a, F: FileSystem> Planner<'a, F> {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        removals.sort_by(|a, b| b.as_os_str().len().cmp(&a.as_os_str().len()));
+        removals.sort_by_key(|b| std::cmp::Reverse(b.as_os_str().len()));
         for path in removals {
             plan.dir_removals.push(DirRemoval {
                 id: mm_core::plan::DirRemovalId(next_dir_removal_id),
@@ -396,7 +396,7 @@ fn choose_sidecar_parent(
             .unwrap_or_default();
         if sidecar_stem.starts_with(&video_stem) {
             let len = video_stem.len();
-            if best.map_or(true, |(_, bl)| len > bl) {
+            if best.is_none_or(|(_, bl)| len > bl) {
                 best = Some((idx, len));
             }
         }

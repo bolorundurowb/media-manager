@@ -48,7 +48,7 @@ impl MediaKind {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "movies" | "movie" => Some(MediaKind::Movies),
             "tv" | "show" | "shows" => Some(MediaKind::Tv),
