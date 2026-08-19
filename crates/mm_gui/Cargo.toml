@@ -1,0 +1,24 @@
+[package]
+name = "mm_gui"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+description = "egui/eframe GUI for media-manager"
+
+[[bin]]
+name = "media-manager-gui"
+path = "src/main.rs"
+
+[dependencies]
+mm_core = { path = "../mm_core" }
+mm_engine = { path = "../mm_engine" }
+eframe = { workspace = true }
+egui = { workspace = true }
+egui_extras = { workspace = true }
+rfd = { workspace = true }
+crossbeam-channel = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

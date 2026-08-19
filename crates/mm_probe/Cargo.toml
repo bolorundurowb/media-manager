@@ -1,0 +1,18 @@
+[package]
+name = "mm_probe"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = "1.85"
+license = { workspace = true }
+repository = { workspace = true }
+description = "Container/tag probing for media-manager"
+
+[dependencies]
+mm_core = { path = "../mm_core" }
+lofty = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
