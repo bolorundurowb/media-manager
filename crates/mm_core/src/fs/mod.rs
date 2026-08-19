@@ -108,6 +108,9 @@ pub trait FileSystem: Send + Sync {
     fn volume_semantics(&self, p: &Path) -> io::Result<VolumeSemantics>;
     fn create_dir_all(&self, p: &Path) -> io::Result<()>;
     fn rename_no_replace(&self, from: &Path, to: &Path) -> io::Result<()>;
+    /// Replace-semantics rename: `to` is overwritten if it is an existing file.
+    /// Used only by [`crate::config::ConflictPolicy::Replace`].
+    fn rename_replace(&self, from: &Path, to: &Path) -> io::Result<()>;
     fn create_new(&self, p: &Path) -> io::Result<Self::Handle>;
     fn copy_into(
         &self,
@@ -129,21 +132,25 @@ pub trait FileSystem: Send + Sync {
     }
 }
 
+/// `true` if this error indicates a cross-device link/rename (EXDEV).
+pub fn is_cross_device(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::CrossesDevices)
+        || e.raw_os_error() == Some(18) // Unix EXDEV
+        || (cfg!(windows) && e.raw_os_error() == Some(17)) // ERROR_NOT_SAME_DEVICE
+}
+
 /// Normalise an occupied-target error to a single [`io::Error`]. §2.5: on Unix
 /// `O_EXCL` against a directory gives `EEXIST` → `AlreadyExists`; on Windows
 /// `CREATE_NEW` against a directory gives `ERROR_ACCESS_DENIED`. Both must map
 /// to a destination-occupied error, else the Windows case is misreported as a
 /// permission failure and routed to `Failure` instead of `Conflict` (§14).
 pub fn destination_occupied_error(e: &io::Error) -> bool {
-    matches!(
-        e.kind(),
-        io::ErrorKind::AlreadyExists
-    ) || e.raw_os_error() == Some(17) /* EEXIST */
-    || e.raw_os_error() == Some(5) /* ERROR_ACCESS_DENIED */
-    || e.raw_os_error() == Some(80) /* ERROR_FILE_EXISTS */
-}
-
-/// `true` if this error indicates a cross-device link/rename (EXDEV).
-pub fn is_cross_device(e: &io::Error) -> bool {
-    matches!(e.kind(), io::ErrorKind::CrossesDevices) || e.raw_os_error() == Some(18)
+    if is_cross_device(e) {
+        return false;
+    }
+    matches!(e.kind(), io::ErrorKind::AlreadyExists)
+        || e.raw_os_error() == Some(17) /* EEXIST */
+        || e.raw_os_error() == Some(5) /* ERROR_ACCESS_DENIED */
+        || e.raw_os_error() == Some(80) /* ERROR_FILE_EXISTS */
+        || e.raw_os_error() == Some(183) /* ERROR_ALREADY_EXISTS */
 }

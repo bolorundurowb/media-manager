@@ -5,6 +5,7 @@
 //! This is what makes spec §22.5 testable in CI: assertions that no source
 //! file is ever lost, and that only §14's `Fatal` set aborts a run.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -13,7 +14,7 @@ use std::time::SystemTime;
 
 use crate::fs::FileSystem;
 use crate::fs::{CancelToken, FileId, FileMeta, Hash, ReadDirIter};
-use crate::volume::VolumeSemantics;
+use crate::volume::{NoReplaceStrategy, VolumeSemantics};
 
 /// Which method to inject a fault into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -25,6 +26,7 @@ pub enum Method {
     IsDirEmpty,
     CreateDirAll,
     RenameNoReplace,
+    RenameReplace,
     CreateNew,
     CopyInto,
     SyncDir,
@@ -43,6 +45,7 @@ pub enum InjectErr {
     NotFound,
     AlreadyExists,
     StorageFull,
+    Interrupted,
     Other,
 }
 
@@ -55,6 +58,7 @@ impl InjectErr {
             InjectErr::NotFound => io::Error::from(io::ErrorKind::NotFound),
             InjectErr::AlreadyExists => io::Error::from(io::ErrorKind::AlreadyExists),
             InjectErr::StorageFull => io::Error::from(io::ErrorKind::StorageFull),
+            InjectErr::Interrupted => io::Error::new(io::ErrorKind::Interrupted, "cancelled"),
             InjectErr::Other => io::Error::from(io::ErrorKind::Other),
         }
     }
@@ -73,6 +77,7 @@ pub struct FaultyFs<F: FileSystem> {
     inner: F,
     faults: Mutex<Vec<Fault>>,
     counter: AtomicU64,
+    method_counts: Mutex<HashMap<Method, u64>>,
     /// Fail the *n*th operation unconditionally (hard failure at op *n*).
     hard_fail_at: Mutex<Option<u64>>,
 }
@@ -83,6 +88,7 @@ impl<F: FileSystem> FaultyFs<F> {
             inner,
             faults: Mutex::new(Vec::new()),
             counter: AtomicU64::new(0),
+            method_counts: Mutex::new(HashMap::new()),
             hard_fail_at: Mutex::new(None),
         }
     }
@@ -92,6 +98,7 @@ impl<F: FileSystem> FaultyFs<F> {
             inner,
             faults: Mutex::new(faults),
             counter: AtomicU64::new(0),
+            method_counts: Mutex::new(HashMap::new()),
             hard_fail_at: Mutex::new(None),
         }
     }
@@ -107,16 +114,25 @@ impl<F: FileSystem> FaultyFs<F> {
     }
 
     /// `Err(e)` if a fault fires for `method` at the current call index.
+    ///
+    /// `Fault.call_index` is 1-based and counts calls to **that method**,
+    /// not global operations. `hard_fail_at` still uses the global counter.
     fn check(&self, method: Method) -> Option<io::Error> {
-        let idx = self.tick();
-        if let Some(n) = *self.hard_fail_at.lock().unwrap() {
-            if idx == n {
-                return Some(io::Error::other("hard fail at op n"));
-            }
+        let global = self.tick();
+        if let Some(n) = *self.hard_fail_at.lock().unwrap()
+            && global == n
+        {
+            return Some(io::Error::other("hard fail at op n"));
         }
+        let method_idx = {
+            let mut counts = self.method_counts.lock().unwrap();
+            let slot = counts.entry(method).or_insert(0);
+            *slot += 1;
+            *slot
+        };
         let faults = self.faults.lock().unwrap();
         for f in faults.iter() {
-            if f.call_index == idx && f.method == method {
+            if f.call_index == method_idx && f.method == method {
                 return Some(f.err.into_io());
             }
         }
@@ -174,6 +190,15 @@ impl<F: FileSystem> FileSystem for FaultyFs<F> {
             return Err(e);
         }
         self.inner.rename_no_replace(from, to)
+    }
+    fn rename_replace(&self, from: &Path, to: &Path) -> io::Result<()> {
+        if let Some(e) = self.check(Method::RenameReplace) {
+            return Err(e);
+        }
+        self.inner.rename_replace(from, to)
+    }
+    fn no_replace_strategy(&self, p: &Path) -> NoReplaceStrategy {
+        self.inner.no_replace_strategy(p)
     }
     fn create_new(&self, p: &Path) -> io::Result<Self::Handle> {
         if let Some(e) = self.check(Method::CreateNew) {

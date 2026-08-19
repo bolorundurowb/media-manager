@@ -15,7 +15,9 @@ use std::time::SystemTime;
 
 use crate::fs::FileSystem;
 use crate::fs::{CancelToken, DirEntry, FileId, FileMeta, Hash, ReadDirIter};
-use crate::volume::{ComponentLimit, NoReplaceStrategy, VolumeSemantics};
+#[cfg(unix)]
+use crate::volume::ComponentLimit;
+use crate::volume::{NoReplaceStrategy, VolumeSemantics};
 
 /// The production filesystem.
 #[derive(Debug, Default, Clone)]
@@ -99,6 +101,10 @@ impl FileSystem for RealFs {
         rename_no_replace(from, to)
     }
 
+    fn rename_replace(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fs::rename(from, to)
+    }
+
     fn create_new(&self, p: &Path) -> io::Result<Self::Handle> {
         OpenOptions::new()
             .write(true)
@@ -136,7 +142,7 @@ impl FileSystem for RealFs {
     }
 
     fn set_mtime(&self, p: &Path, t: SystemTime) -> io::Result<()> {
-        let file = File::open(p).or_else(|_| File::create(p))?;
+        let file = OpenOptions::new().write(true).open(p)?;
         let times = std::fs::FileTimes::new().set_modified(t);
         file.set_times(times)
     }

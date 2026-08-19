@@ -20,9 +20,11 @@ enum Node {
         data: Vec<u8>,
         mtime: SystemTime,
         read_only: bool,
+        id: u64,
     },
     Dir {
         entries: BTreeSet<String>,
+        id: u64,
     },
     // Not yet constructed by any `MemFs` method — reserved for the §5.1
     // symlink-policy tests (`skip` / `follow` / `treat_as_file`), which are
@@ -30,6 +32,7 @@ enum Node {
     #[allow(dead_code)]
     Symlink {
         target: PathBuf,
+        id: u64,
     },
 }
 
@@ -72,16 +75,18 @@ impl MemFs {
         // register in parent's entry list
         if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
             let parent = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
-            if let Some(Node::Dir { entries }) = nodes.get_mut(&parent) {
+            if let Some(Node::Dir { entries, .. }) = nodes.get_mut(&parent) {
                 entries.insert(name.to_string());
             }
         }
+        let id = self.alloc_id();
         nodes.insert(
             path.clone(),
             Node::File {
                 data: data.into(),
                 mtime: SystemTime::now(),
                 read_only: false,
+                id,
             },
         );
     }
@@ -93,12 +98,14 @@ impl MemFs {
         let mut nodes = self.nodes.lock().unwrap();
         if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
             let parent = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
-            if let Some(Node::Dir { entries }) = nodes.get_mut(&parent) {
+            if let Some(Node::Dir { entries, .. }) = nodes.get_mut(&parent) {
                 entries.insert(name.to_string());
             }
         }
+        let id = self.alloc_id();
         nodes.entry(path).or_insert_with(|| Node::Dir {
             entries: BTreeSet::new(),
+            id,
         });
     }
 
@@ -117,6 +124,7 @@ impl MemFs {
             acc.push(comp);
             nodes.entry(acc.clone()).or_insert_with(|| Node::Dir {
                 entries: BTreeSet::new(),
+                id: self.alloc_id(),
             });
         }
     }
@@ -139,6 +147,7 @@ impl FileSystem for MemFs {
                 data,
                 mtime,
                 read_only,
+                ..
             }) => Ok(FileMeta {
                 is_dir: false,
                 is_symlink: false,
@@ -171,16 +180,22 @@ impl FileSystem for MemFs {
     fn read_link(&self, p: &Path) -> io::Result<PathBuf> {
         let nodes = self.nodes.lock().unwrap();
         match nodes.get(p) {
-            Some(Node::Symlink { target }) => Ok(target.clone()),
+            Some(Node::Symlink { target, .. }) => Ok(target.clone()),
             _ => Err(io::Error::from(io::ErrorKind::InvalidInput)),
         }
     }
 
     fn file_id(&self, p: &Path) -> io::Result<FileId> {
-        let _ = self.metadata(p)?;
+        let nodes = self.nodes.lock().unwrap();
+        let id = match nodes.get(p) {
+            Some(Node::File { id, .. })
+            | Some(Node::Dir { id, .. })
+            | Some(Node::Symlink { id, .. }) => *id,
+            None => return Err(io::Error::from(io::ErrorKind::NotFound)),
+        };
         Ok(FileId {
             device: 0,
-            inode: self.alloc_id(),
+            inode: id,
         })
     }
 
@@ -188,7 +203,7 @@ impl FileSystem for MemFs {
         let nodes = self.nodes.lock().unwrap();
         let mut out: Vec<DirEntry> = Vec::new();
         match nodes.get(p) {
-            Some(Node::Dir { entries }) => {
+            Some(Node::Dir { entries, .. }) => {
                 for name in entries {
                     let child = p.join(name);
                     let (is_dir, len) = match nodes.get(&child) {
@@ -214,7 +229,7 @@ impl FileSystem for MemFs {
     fn is_dir_empty(&self, p: &Path) -> io::Result<bool> {
         let nodes = self.nodes.lock().unwrap();
         match nodes.get(p) {
-            Some(Node::Dir { entries }) => Ok(entries.is_empty()),
+            Some(Node::Dir { entries, .. }) => Ok(entries.is_empty()),
             _ => Err(io::Error::from(io::ErrorKind::NotFound)),
         }
     }
@@ -227,10 +242,29 @@ impl FileSystem for MemFs {
         let mut nodes = self.nodes.lock().unwrap();
         let mut acc = PathBuf::new();
         for comp in p.iter() {
+            let parent = acc.clone();
             acc.push(comp);
-            nodes.entry(acc.clone()).or_insert_with(|| Node::Dir {
-                entries: BTreeSet::new(),
-            });
+            let is_new = !nodes.contains_key(&acc);
+            if is_new {
+                let id = {
+                    let mut n = self.next_id.lock().unwrap();
+                    let v = *n;
+                    *n += 1;
+                    v
+                };
+                nodes.insert(
+                    acc.clone(),
+                    Node::Dir {
+                        entries: BTreeSet::new(),
+                        id,
+                    },
+                );
+                if let Some(name) = acc.file_name().and_then(|s| s.to_str())
+                    && let Some(Node::Dir { entries, .. }) = nodes.get_mut(&parent)
+                {
+                    entries.insert(name.to_string());
+                }
+            }
         }
         Ok(())
     }
@@ -245,18 +279,57 @@ impl FileSystem for MemFs {
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         // remove from old parent, add to new parent
         if let (Some(old_name), Some(old_parent)) = (from.file_name(), from.parent()) {
-            if let Some(Node::Dir { entries }) = nodes.get_mut(old_parent) {
+            if let Some(Node::Dir { entries, .. }) = nodes.get_mut(old_parent) {
                 if let Some(s) = old_name.to_str() {
                     entries.remove(s);
                 }
             }
         }
         if let (Some(new_name), Some(new_parent)) = (to.file_name(), to.parent()) {
-            if let Some(Node::Dir { entries }) = nodes.get_mut(new_parent) {
+            if let Some(Node::Dir { entries, .. }) = nodes.get_mut(new_parent) {
                 if let Some(s) = new_name.to_str() {
                     entries.insert(s.to_string());
                 }
             }
+        }
+        nodes.insert(to.to_path_buf(), node);
+        Ok(())
+    }
+
+    fn rename_replace(&self, from: &Path, to: &Path) -> io::Result<()> {
+        if from == to {
+            return Ok(());
+        }
+        let mut nodes = self.nodes.lock().unwrap();
+        match nodes.get(to) {
+            Some(Node::Dir { .. }) => {
+                return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+            }
+            Some(Node::File { .. }) | Some(Node::Symlink { .. }) => {
+                nodes.remove(to);
+                if let (Some(name), Some(parent)) = (to.file_name(), to.parent())
+                    && let Some(Node::Dir { entries, .. }) = nodes.get_mut(parent)
+                    && let Some(s) = name.to_str()
+                {
+                    entries.remove(s);
+                }
+            }
+            None => {}
+        }
+        let node = nodes
+            .remove(from)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        if let (Some(old_name), Some(old_parent)) = (from.file_name(), from.parent())
+            && let Some(Node::Dir { entries, .. }) = nodes.get_mut(old_parent)
+            && let Some(s) = old_name.to_str()
+        {
+            entries.remove(s);
+        }
+        if let (Some(new_name), Some(new_parent)) = (to.file_name(), to.parent())
+            && let Some(Node::Dir { entries, .. }) = nodes.get_mut(new_parent)
+            && let Some(s) = new_name.to_str()
+        {
+            entries.insert(s.to_string());
         }
         nodes.insert(to.to_path_buf(), node);
         Ok(())
@@ -271,16 +344,23 @@ impl FileSystem for MemFs {
         }
         if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
             let parent = p.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
-            if let Some(Node::Dir { entries }) = nodes.get_mut(&parent) {
+            if let Some(Node::Dir { entries, .. }) = nodes.get_mut(&parent) {
                 entries.insert(name.to_string());
             }
         }
+        let id = {
+            let mut n = self.next_id.lock().unwrap();
+            let v = *n;
+            *n += 1;
+            v
+        };
         nodes.insert(
             p.to_path_buf(),
             Node::File {
                 data: Vec::new(),
                 mtime: SystemTime::now(),
                 read_only: false,
+                id,
             },
         );
         Ok(MemHandle {
@@ -336,7 +416,7 @@ impl FileSystem for MemFs {
         let existed = nodes.remove(p).is_some();
         if existed {
             if let (Some(name), Some(parent)) = (p.file_name(), p.parent()) {
-                if let Some(Node::Dir { entries }) = nodes.get_mut(parent) {
+                if let Some(Node::Dir { entries, .. }) = nodes.get_mut(parent) {
                     if let Some(s) = name.to_str() {
                         entries.remove(s);
                     }
@@ -351,10 +431,10 @@ impl FileSystem for MemFs {
     fn remove_dir(&self, p: &Path) -> io::Result<()> {
         let mut nodes = self.nodes.lock().unwrap();
         match nodes.get(p) {
-            Some(Node::Dir { entries }) if entries.is_empty() => {
+            Some(Node::Dir { entries, .. }) if entries.is_empty() => {
                 nodes.remove(p);
                 if let (Some(name), Some(parent)) = (p.file_name(), p.parent()) {
-                    if let Some(Node::Dir { entries }) = nodes.get_mut(parent) {
+                    if let Some(Node::Dir { entries, .. }) = nodes.get_mut(parent) {
                         if let Some(s) = name.to_str() {
                             entries.remove(s);
                         }

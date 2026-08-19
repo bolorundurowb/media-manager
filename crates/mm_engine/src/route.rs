@@ -82,11 +82,14 @@ fn route_video(ctx: &RouteContext) -> Option<Vec<String>> {
         &map,
         vs.max_component,
     )?;
-    let file_name = sanitise_component(
+    let mut file_name = sanitise_component(
         &naming.file.render(&ValueSourceForMovie::new(ctx, true)),
         &map,
         vs.max_component,
     )?;
+    if let Some(n) = ctx.resolved.copy.as_value() {
+        file_name = format!("{file_name} ({n})");
+    }
     Some(vec![dir_name, file_name])
 }
 
@@ -100,11 +103,14 @@ fn route_subtitle(ctx: &RouteContext) -> Option<Vec<String>> {
         &map,
         vs.max_component,
     )?;
-    let sub_name = sanitise_component(
+    let mut sub_name = sanitise_component(
         &naming.sub_file.render(&SubtitleValueSource::new(ctx)),
         &map,
         vs.max_component,
     )?;
+    if let Some(n) = ctx.resolved.copy.as_value() {
+        sub_name = format!("{sub_name} ({n})");
+    }
     if ctx.cfg.behaviour.create_subs_dir {
         Some(vec![dir_name, naming.subs_dir.clone(), sub_name])
     } else {

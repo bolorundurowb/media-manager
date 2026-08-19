@@ -1,10 +1,12 @@
 //! Resolve stage (§5.2).
 //!
-//! Merge candidates per field via the per-field source-preference table. Phase
-//! 2 only has filename-sourced candidates; probing (Phase 4) will add more.
+//! Merge candidates per field via the per-field source-preference table.
+//! Filename fields are the baseline; [`merge_field`] folds in container
+//! (and later tag/provider) candidates using [`mm_core::identity::pick_best`].
 
 use mm_core::Field;
 use mm_core::config::Config;
+use mm_core::identity::SourcePreference;
 use mm_core::plan::{FieldName, Readiness};
 
 use mm_parse::ParsedMovie;
@@ -20,6 +22,7 @@ pub struct ResolvedMovie {
     pub video_codec: Field<String>,
     pub audio_format: Field<String>,
     pub hdr: Field<String>,
+    pub copy: Field<u16>,
 }
 
 impl ResolvedMovie {
@@ -33,6 +36,7 @@ impl ResolvedMovie {
             video_codec: p.video_codec.clone(),
             audio_format: p.audio_format.clone(),
             hdr: p.hdr.clone(),
+            copy: p.copy.clone(),
         }
     }
 
@@ -69,8 +73,34 @@ impl ResolvedMovie {
     }
 }
 
-/// Resolve a parsed movie. In Phase 2 this is a no-op merge (only filename
-/// candidates); later phases merge embedded/container/provider candidates.
+/// Resolve a parsed movie from filename candidates. Probe/tag fields are
+/// folded in afterwards via [`merge_field`].
 pub fn resolve_movie(parsed: &ParsedMovie, _cfg: &Config) -> ResolvedMovie {
     ResolvedMovie::from_parsed(parsed)
+}
+
+/// Keep the better of `current` and `candidate` per the source-preference table.
+pub fn merge_field<T: Clone>(
+    current: &Field<T>,
+    candidate: Field<T>,
+    prefs: &SourcePreference,
+) -> Field<T> {
+    mm_core::identity::pick_best(current, &candidate, prefs).clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mm_core::identity::SourcePreference;
+    use mm_core::provenance::{Confidence, Source};
+
+    #[test]
+    fn container_header_beats_filename_resolution() {
+        let prefs = SourcePreference::conservative_default();
+        let filename = Field::known("720p".into(), Source::Filename, Confidence::High);
+        let container = Field::known("1080p".into(), Source::ContainerHeader, Confidence::High);
+        let best = merge_field(&filename, container, &prefs);
+        assert_eq!(best.as_value().map(String::as_str), Some("1080p"));
+        assert_eq!(best.source(), Some(Source::ContainerHeader));
+    }
 }

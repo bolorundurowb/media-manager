@@ -34,6 +34,9 @@ pub struct ParsedMovie {
     pub hdr: Field<String>,
     pub language: Field<String>,
     pub release_group: Field<String>,
+    /// Copy-number suffix ` (N)` from `RenameNew` (`Movie (2010) (2).mkv`).
+    /// Optional; unknown when the name has no such suffix.
+    pub copy: Field<u16>,
     /// True when the filename looks like an episode marker (e.g. `1x01`).
     /// Always false for Phase 2; populated by the TV parser in Phase 5.
     pub ambiguous_episode_like: bool,

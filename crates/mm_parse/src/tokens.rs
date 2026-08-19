@@ -98,15 +98,10 @@ fn strip_release_group(s: &str) -> (String, Option<String>) {
             // The whole tag since the previous separator, e.g. `WEB-DL` or
             // `x264-SPARKS` — checked as a unit so a real vocab tag that
             // contains a dash is never split in half.
-            let seg_start = s[..dash]
-                .rfind(['.', '_', '+'])
-                .map(|i| i + 1)
-                .unwrap_or(0);
+            let seg_start = s[..dash].rfind(['.', '_', '+']).map(|i| i + 1).unwrap_or(0);
             let whole_tag = &s[seg_start..];
             if !is_reserved_word(whole_tag) {
-                let stripped = s[..dash]
-                    .trim_end_matches(['.', '_', '+', ' '])
-                    .to_string();
+                let stripped = s[..dash].trim_end_matches(['.', '_', '+', ' ']).to_string();
                 return (stripped, Some(candidate.to_string()));
             }
         }
@@ -187,7 +182,10 @@ mod tests {
     fn strips_release_group() {
         let toks = tokenize("Movie.2020.1080p-RARBG.mkv");
         assert!(!toks.iter().any(|t| t.text == "RARBG"));
-        assert_eq!(release_group_of("Movie.2020.1080p-RARBG.mkv").as_deref(), Some("RARBG"));
+        assert_eq!(
+            release_group_of("Movie.2020.1080p-RARBG.mkv").as_deref(),
+            Some("RARBG")
+        );
     }
 
     #[test]

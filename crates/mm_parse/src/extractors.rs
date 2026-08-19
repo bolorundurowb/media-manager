@@ -22,6 +22,7 @@ pub enum ParseField {
     Edition,
     Language,
     ReleaseGroup,
+    Copy,
 }
 
 /// A claimed span with its extracted value.
@@ -228,6 +229,64 @@ impl Extractor for LanguageExtractor {
                 return Some(Claim::new(ParseField::Language, code, tok.start, tok.end));
             }
         }
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Copy-number suffix ` (N)` from RenameNew (§5.6). Trailing parenthesised
+// integer that is not a year. Optional; must not steal `(2010)` from Year.
+// ---------------------------------------------------------------------------
+
+pub struct CopyNumberExtractor;
+
+impl Extractor for CopyNumberExtractor {
+    fn extract(&self, tokens: &[Token], _normalised: &str) -> Option<Claim> {
+        let tok = tokens.last()?;
+        let n = parse_copy_token(&tok.text)?;
+        Some(Claim::new(
+            ParseField::Copy,
+            n.to_string(),
+            tok.start,
+            tok.end,
+        ))
+    }
+}
+
+/// Parse a trailing ` (N)` copy-number from a file stem (not including the
+/// extension). Years in `1888..=2100` are left alone so `Inception (2010)`
+/// is not treated as copy 2010.
+pub fn split_copy_suffix(stem: &str) -> (&str, Option<u16>) {
+    let Some(idx) = stem.rfind(" (") else {
+        return (stem, None);
+    };
+    let rest = &stem[idx + 2..];
+    let Some(inner) = rest.strip_suffix(')') else {
+        return (stem, None);
+    };
+    if rest.len() != inner.len() + 1 {
+        return (stem, None);
+    }
+    match parse_copy_number(inner) {
+        Some(n) => (&stem[..idx], Some(n)),
+        None => (stem, None),
+    }
+}
+
+fn parse_copy_token(text: &str) -> Option<u16> {
+    let inner = strip_brackets(text);
+    if inner.len() == text.len() {
+        // Not bracketed — a bare trailing integer is not a copy suffix.
+        return None;
+    }
+    parse_copy_number(inner)
+}
+
+fn parse_copy_number(s: &str) -> Option<u16> {
+    let n: u16 = s.parse().ok()?;
+    if (2..1888).contains(&n) || (2101..).contains(&n) {
+        Some(n)
+    } else {
         None
     }
 }

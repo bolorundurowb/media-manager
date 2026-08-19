@@ -3,7 +3,7 @@
 //! Stages 1–11: scan, classify, parse, group, probe, resolve, regroup,
 //! associate, route, validate, reconcile. Only planning — no writes.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use mm_core::classify::{FileClass, MediaKind};
@@ -17,6 +17,7 @@ use mm_parse::parse_movie;
 
 use crate::classify::classify;
 use crate::group::{MovieGroup, group_movies};
+use crate::probe_stage::{could_become_move, open_cache, probe_and_merge};
 use crate::reconcile::reconcile;
 use crate::resolve::{ResolvedMovie, resolve_movie};
 use crate::route::{RouteContext, route};
@@ -97,11 +98,19 @@ impl<'a, F: FileSystem> Planner<'a, F> {
         // 2. Classify
         classify(&mut scanned, self.cfg);
 
-        // 3. Parse (movies only in Phase 2)
+        // 3. Parse (filename only) and a first-pass resolve.
         let mut items = self.parse_and_resolve(scanned);
 
-        // 4+7. Group (two-pass: provisional by title, canonical by title+year)
+        // 4. Provisional group on mandatory discriminators (title).
         let groups = self.group_items(&items);
+
+        // 5. Probe only grouped videos that could become a Move.
+        self.probe_grouped(&mut items, &groups, &mut plan);
+
+        // 6+7. Re-resolve readiness after container fields, then regroup
+        // with canonical year written back into every member.
+        self.reresolve_readiness(&mut items);
+        let groups = self.regroup_items(&mut items);
 
         // 8. Associate sidecars to videos in the same source directory.
         self.associate_sidecars(&mut items, &groups);
@@ -113,7 +122,7 @@ impl<'a, F: FileSystem> Planner<'a, F> {
         self.validate_items(&mut items, &mut plan);
 
         // 11. Reconcile
-        reconcile(self.fs, &mut items, &self.volume)?;
+        reconcile(self.fs, &mut items, &self.volume, self.cfg)?;
 
         // Build final plan.
         self.finalise_plan(items, &mut plan);
@@ -179,6 +188,33 @@ impl<'a, F: FileSystem> Planner<'a, F> {
             .collect()
     }
 
+    fn probe_grouped(
+        &self,
+        items: &mut [PlanItemInternal],
+        groups: &[MovieGroup],
+        plan: &mut Plan,
+    ) {
+        let grouped: HashSet<usize> = groups
+            .iter()
+            .flat_map(|g| g.items.iter().copied())
+            .collect();
+        let cache = open_cache();
+        for (idx, item) in items.iter_mut().enumerate() {
+            if !grouped.contains(&idx) {
+                continue;
+            }
+            if !could_become_move(item.class, item.resolved.as_ref()) {
+                continue;
+            }
+            let source = item.source.clone();
+            let id = item.id;
+            let Some(resolved) = item.resolved.as_mut() else {
+                continue;
+            };
+            probe_and_merge(self.fs, &source, id, resolved, &cache, self.cfg, plan);
+        }
+    }
+
     fn group_items(&self, items: &[PlanItemInternal]) -> Vec<MovieGroup> {
         let resolved: Vec<(usize, &ResolvedMovie)> = items
             .iter()
@@ -186,6 +222,39 @@ impl<'a, F: FileSystem> Planner<'a, F> {
             .filter_map(|(i, it)| it.resolved.as_ref().map(|r| (i, r)))
             .collect();
         group_movies(&resolved)
+    }
+
+    fn reresolve_readiness(&self, items: &mut [PlanItemInternal]) {
+        for item in items.iter_mut() {
+            if let Some(resolved) = &item.resolved {
+                if item.class == FileClass::Video {
+                    item.readiness = resolved.readiness(self.cfg);
+                }
+            }
+        }
+    }
+
+    /// Pass 2 of grouping: write the canonical year/id back into every member.
+    fn regroup_items(&self, items: &mut [PlanItemInternal]) -> Vec<MovieGroup> {
+        let groups = self.group_items(items);
+        for g in &groups {
+            for &idx in &g.items {
+                let Some(item) = items.get_mut(idx) else {
+                    continue;
+                };
+                item.movie_id = g.id.clone();
+                if let (Some(year), Some(resolved)) = (g.id.year, item.resolved.as_mut()) {
+                    if !resolved.year.is_known() {
+                        resolved.year = mm_core::Field::known(
+                            year,
+                            mm_core::Source::Filename,
+                            mm_core::Confidence::Medium,
+                        );
+                    }
+                }
+            }
+        }
+        groups
     }
 
     fn associate_sidecars(&self, items: &mut [PlanItemInternal], groups: &[MovieGroup]) {
@@ -335,7 +404,9 @@ impl<'a, F: FileSystem> Planner<'a, F> {
         // Directory renames: case/normalisation-only fixes. Phase 2 leaves this
         // empty; populated when a library already has `season 01` style names.
         for path in plan.dir_creates.iter() {
-            if let Some(rename) = detect_case_rename(path, &self.volume, &mut next_dir_rename_id) {
+            if let Some(rename) =
+                detect_case_rename(self.fs, path, &self.volume, &mut next_dir_rename_id)
+            {
                 plan.dir_renames.push(rename);
             }
         }
@@ -410,13 +481,42 @@ fn choose_sidecar_parent(
     best.map(|(idx, _)| idx)
 }
 
-fn detect_case_rename(
-    _path: &Path,
-    _volume: &VolumeSemantics,
-    _next_id: &mut u64,
+fn detect_case_rename<F: FileSystem>(
+    fs: &F,
+    path: &Path,
+    volume: &VolumeSemantics,
+    next_id: &mut u64,
 ) -> Option<mm_core::plan::DirRename> {
-    // Phase 2 placeholder.
-    None
+    // Case- and normalisation-sensitive volumes have nothing to fix.
+    if volume.case_sensitive && volume.normalisation_sensitive {
+        return None;
+    }
+    let parent = path.parent()?;
+    let desired = path.file_name()?.to_string_lossy().into_owned();
+    let desired_key = volume.collision_key(&desired);
+    let iter = fs.read_dir(parent).ok()?;
+    let mut mismatch: Option<PathBuf> = None;
+    for entry in iter.flatten() {
+        if !entry.is_dir {
+            continue;
+        }
+        let name = entry.file_name.to_string_lossy();
+        if name.as_ref() == desired {
+            return None;
+        }
+        if volume.collision_key(&name) == desired_key {
+            mismatch = Some(entry.path);
+        }
+    }
+    mismatch.map(|from| {
+        let id = *next_id;
+        *next_id += 1;
+        mm_core::plan::DirRename {
+            id: mm_core::plan::DirRenameId(id),
+            from,
+            to: path.to_path_buf(),
+        }
+    })
 }
 
 // Helper trait so Readiness can be queried uniformly.
@@ -472,5 +572,122 @@ mod tests {
         sidecar.class = FileClass::Subtitle;
         let chosen = choose_sidecar_parent(&sidecar, &[0], &items);
         assert_eq!(chosen, None);
+    }
+
+    #[test]
+    fn detect_case_rename_on_insensitive_volume() {
+        use mm_core::fs::mem::MemFs;
+
+        let fs = MemFs::with_volume(VolumeSemantics::conservative());
+        fs.seed_dir(Path::new("/lib"));
+        fs.seed_dir(Path::new("/lib/movie (2010)"));
+        let mut next = 0u64;
+        let rename = detect_case_rename(
+            &fs,
+            Path::new("/lib/Movie (2010)"),
+            &VolumeSemantics::conservative(),
+            &mut next,
+        )
+        .expect("case-only rename");
+        assert_eq!(rename.from, PathBuf::from("/lib/movie (2010)"));
+        assert_eq!(rename.to, PathBuf::from("/lib/Movie (2010)"));
+    }
+
+    #[test]
+    fn detect_case_rename_skips_sensitive_volumes() {
+        use mm_core::fs::mem::MemFs;
+
+        let fs = MemFs::with_volume(VolumeSemantics::sensitive_bytes());
+        fs.seed_dir(Path::new("/lib"));
+        fs.seed_dir(Path::new("/lib/movie (2010)"));
+        let mut next = 0u64;
+        assert!(
+            detect_case_rename(
+                &fs,
+                Path::new("/lib/Movie (2010)"),
+                &VolumeSemantics::sensitive_bytes(),
+                &mut next,
+            )
+            .is_none()
+        );
+    }
+
+    fn testdata_media() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/media")
+    }
+
+    #[test]
+    fn probe_scope_ratio_labels_1080p_not_720p() {
+        use mm_core::fs::real::RealFs;
+        use mm_core::plan::Action;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src_fixture = testdata_media().join("scope_1080p.mp4");
+        let dest = tmp.path().join("Scope.Movie.2010.mp4");
+        std::fs::copy(&src_fixture, &dest).expect("copy scope fixture");
+
+        let cfg = Config::default();
+        let fs = RealFs::new();
+        let planner = Planner::new(&fs, tmp.path(), MediaKind::Movies, &cfg).unwrap();
+        let plan = planner.plan(Default::default()).unwrap();
+        let item = plan
+            .items
+            .iter()
+            .find(|i| i.class == FileClass::Video)
+            .expect("video item");
+        match &item.action {
+            Action::Move { to, .. } => {
+                let name = to.file_name().unwrap().to_string_lossy();
+                assert!(
+                    name.contains("1080p"),
+                    "scope 1920x800 must band as 1080p, got {name}"
+                );
+                assert!(
+                    !name.contains("720p"),
+                    "scope 1920x800 must not band as 720p, got {name}"
+                );
+            }
+            other => panic!("expected Move, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unsupported_avi_falls_back_to_filename_with_diagnostic() {
+        use mm_core::fs::real::RealFs;
+        use mm_core::plan::Action;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("Some.Movie.2010.1080p.avi"),
+            b"not a real avi",
+        )
+        .unwrap();
+
+        let cfg = Config::default();
+        let fs = RealFs::new();
+        let planner = Planner::new(&fs, tmp.path(), MediaKind::Movies, &cfg).unwrap();
+        let plan = planner.plan(Default::default()).unwrap();
+        let item = plan
+            .items
+            .iter()
+            .find(|i| i.class == FileClass::Video)
+            .expect("video item");
+        match &item.action {
+            Action::Move { to, .. } => {
+                let name = to.file_name().unwrap().to_string_lossy();
+                assert!(
+                    name.contains("1080p"),
+                    "filename resolution must survive unsupported container, got {name}"
+                );
+            }
+            other => panic!("expected Move from filename fallback, got {other:?}"),
+        }
+        assert!(
+            plan.diagnostics.iter().any(|d| {
+                d.stage == "probe" && d.message.contains("container-based detection unavailable")
+            }),
+            "expected unsupported-container diagnostic, got {:?}",
+            plan.diagnostics
+        );
     }
 }

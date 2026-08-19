@@ -10,6 +10,7 @@ description = "Scan → classify → group → plan → execute engine for media
 [dependencies]
 mm_core = { path = "../mm_core" }
 mm_parse = { path = "../mm_parse" }
+mm_probe = { path = "../mm_probe" }
 walkdir = { workspace = true }
 rayon = { workspace = true }
 crossbeam-channel = { workspace = true }
@@ -23,6 +24,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true

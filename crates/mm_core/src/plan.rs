@@ -120,6 +120,10 @@ pub enum SkipReason {
     Junk,
     Unknown,
     Protected,
+    /// Destination occupied and [`crate::config::ConflictPolicy::Skip`].
+    Conflict,
+    /// Destination occupied, identical bytes, [`crate::config::ConflictPolicy::SkipIfIdentical`].
+    Identical,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

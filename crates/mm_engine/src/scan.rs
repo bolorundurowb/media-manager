@@ -180,10 +180,7 @@ mod tests {
         // occurrence of '.' to find one that lets the rest of the pattern
         // match, not give up after trying only the first.
         assert!(glob_match("*.part", "movie.name.part"));
-        assert!(glob_match(
-            "*.tmp",
-            "Show.Name.S01E01.1080p.mkv.tmp"
-        ));
+        assert!(glob_match("*.tmp", "Show.Name.S01E01.1080p.mkv.tmp"));
         assert!(glob_match("*.!qB", "movie.name.mkv.!qB"));
         assert!(!glob_match("*.tmp", "Show.Name.S01E01.1080p.mkv"));
     }

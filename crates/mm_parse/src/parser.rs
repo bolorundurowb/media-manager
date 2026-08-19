@@ -6,8 +6,8 @@
 use mm_core::{Confidence, Source};
 
 use crate::extractors::{
-    AudioFormatExtractor, Claim, EditionExtractor, Extractor, HdrExtractor, ParseField,
-    ResolutionExtractor, SourceExtractor, VideoCodecExtractor, YearExtractor,
+    AudioFormatExtractor, Claim, CopyNumberExtractor, EditionExtractor, Extractor, HdrExtractor,
+    ParseField, ResolutionExtractor, SourceExtractor, VideoCodecExtractor, YearExtractor,
 };
 use crate::model::{MediaParse, ParseOptions, ParsedMovie, known};
 use crate::tokens::{normalise, release_group_of, tokenize};
@@ -38,6 +38,7 @@ pub fn parse_movie_filename(filename: &str, opts: &ParseOptions) -> ParsedMovie 
         // words (e.g. "No Country for Old Men"). Subtitle language is handled
         // separately during association (§5.4).
         Box::new(YearExtractor::new(opts.min_year, opts.max_year)),
+        Box::new(CopyNumberExtractor),
         // Release group is NOT handled via the extractor/claim mechanism: the
         // tokeniser strips it from the string before tokens ever exist (see
         // `tokens::normalise_and_capture`), so no extractor operating on
@@ -127,6 +128,11 @@ fn set_field(movie: &mut ParsedMovie, claim: Claim) {
         ParseField::ReleaseGroup => {
             movie.release_group = known(claim.value, src, Confidence::Low);
         }
+        ParseField::Copy => {
+            if let Ok(n) = claim.value.parse::<u16>() {
+                movie.copy = known(n, src, Confidence::High);
+            }
+        }
     }
 }
 
@@ -178,5 +184,21 @@ mod tests {
         assert_eq!(m.title.as_value().unwrap(), "Whiplash");
         assert_eq!(m.source.as_value().unwrap(), "WEB-DL");
         assert_eq!(m.release_group.as_value().unwrap(), "YTS.MX");
+    }
+
+    #[test]
+    fn copy_number_suffix_is_stripped_not_folded_into_title() {
+        let m = movie("Inception (2010) (2).mkv");
+        assert_eq!(m.title.as_value().unwrap(), "Inception");
+        assert_eq!(m.year.as_value().copied().unwrap(), 2010);
+        assert_eq!(m.copy.as_value().copied().unwrap(), 2);
+    }
+
+    #[test]
+    fn year_is_not_mistaken_for_copy_number() {
+        let m = movie("Inception (2010).mkv");
+        assert_eq!(m.title.as_value().unwrap(), "Inception");
+        assert_eq!(m.year.as_value().copied().unwrap(), 2010);
+        assert!(m.copy.as_value().is_none());
     }
 }
