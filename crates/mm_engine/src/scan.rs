@@ -17,7 +17,11 @@ pub struct ScannedFile {
 }
 
 /// Scan `root` recursively using the provided filesystem and config.
-pub fn scan<F: FileSystem>(fs: &F, root: &Path, cfg: &Config) -> Result<Vec<ScannedFile>, std::io::Error> {
+pub fn scan<F: FileSystem>(
+    fs: &F,
+    root: &Path,
+    cfg: &Config,
+) -> Result<Vec<ScannedFile>, std::io::Error> {
     let mut out = Vec::new();
     let mut visited = HashSet::new();
     scan_dir(fs, root, root, cfg, &mut visited, &mut out)?;
@@ -90,7 +94,10 @@ fn push_file(
 }
 
 fn make_relative(root: &Path, absolute: &Path) -> PathBuf {
-    absolute.strip_prefix(root).unwrap_or(absolute).to_path_buf()
+    absolute
+        .strip_prefix(root)
+        .unwrap_or(absolute)
+        .to_path_buf()
 }
 
 fn is_ignored(relative: &Path, file_name: &std::ffi::OsStr, _cfg: &Config) -> bool {

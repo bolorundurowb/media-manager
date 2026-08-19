@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use crate::fs::{CancelToken, DirEntry, FileId, FileMeta, Hash, ReadDirIter};
 use crate::fs::FileSystem;
+use crate::fs::{CancelToken, DirEntry, FileId, FileMeta, Hash, ReadDirIter};
 use crate::volume::VolumeSemantics;
 
 #[derive(Debug, Clone)]
@@ -97,26 +97,27 @@ impl MemFs {
                 entries.insert(name.to_string());
             }
         }
-        nodes
-            .entry(path)
-            .or_insert_with(|| Node::Dir {
-                entries: BTreeSet::new(),
-            });
+        nodes.entry(path).or_insert_with(|| Node::Dir {
+            entries: BTreeSet::new(),
+        });
     }
 
     fn ensure_parent(&self, path: &Path) {
         let mut nodes = self.nodes.lock().unwrap();
         let mut acc = PathBuf::new();
-        for comp in path.parent().and_then(|p| p.iter().next()).into_iter().flat_map(|_| {
-            // iterate over all ancestor components
-            path.parent().unwrap_or_else(|| Path::new("")).iter()
-        }) {
+        for comp in path
+            .parent()
+            .and_then(|p| p.iter().next())
+            .into_iter()
+            .flat_map(|_| {
+                // iterate over all ancestor components
+                path.parent().unwrap_or_else(|| Path::new("")).iter()
+            })
+        {
             acc.push(comp);
-            nodes
-                .entry(acc.clone())
-                .or_insert_with(|| Node::Dir {
-                    entries: BTreeSet::new(),
-                });
+            nodes.entry(acc.clone()).or_insert_with(|| Node::Dir {
+                entries: BTreeSet::new(),
+            });
         }
     }
 
@@ -134,7 +135,11 @@ impl FileSystem for MemFs {
     fn metadata(&self, p: &Path) -> io::Result<FileMeta> {
         let nodes = self.nodes.lock().unwrap();
         match nodes.get(p) {
-            Some(Node::File { data, mtime, read_only }) => Ok(FileMeta {
+            Some(Node::File {
+                data,
+                mtime,
+                read_only,
+            }) => Ok(FileMeta {
                 is_dir: false,
                 is_symlink: false,
                 len: data.len() as u64,
@@ -223,11 +228,9 @@ impl FileSystem for MemFs {
         let mut acc = PathBuf::new();
         for comp in p.iter() {
             acc.push(comp);
-            nodes
-                .entry(acc.clone())
-                .or_insert_with(|| Node::Dir {
-                    entries: BTreeSet::new(),
-                });
+            nodes.entry(acc.clone()).or_insert_with(|| Node::Dir {
+                entries: BTreeSet::new(),
+            });
         }
         Ok(())
     }
@@ -260,7 +263,8 @@ impl FileSystem for MemFs {
     }
 
     fn create_new(&self, p: &Path) -> io::Result<Self::Handle> {
-        self.create_dir_all(p.parent().unwrap_or(Path::new(""))).ok();
+        self.create_dir_all(p.parent().unwrap_or(Path::new("")))
+            .ok();
         let mut nodes = self.nodes.lock().unwrap();
         if nodes.contains_key(p) {
             return Err(io::Error::from(io::ErrorKind::AlreadyExists));
@@ -404,7 +408,9 @@ mod tests {
         let fs = MemFs::new();
         fs.seed_file("/s.bin", vec![9u8; 64]);
         let mut h = fs.create_new(Path::new("/d.bin")).unwrap();
-        let n = fs.copy_into(Path::new("/s.bin"), &mut h, &CancelToken::new()).unwrap();
+        let n = fs
+            .copy_into(Path::new("/s.bin"), &mut h, &CancelToken::new())
+            .unwrap();
         assert_eq!(n, 64);
         let m = fs.metadata(Path::new("/d.bin")).unwrap();
         assert_eq!(m.len, 64);

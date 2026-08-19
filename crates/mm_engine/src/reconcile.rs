@@ -52,7 +52,9 @@ pub fn reconcile<F: FileSystem>(
         if !matches!(item.action, Action::Move { .. }) {
             continue;
         }
-        let Some(dest) = &item.destination else { continue };
+        let Some(dest) = &item.destination else {
+            continue;
+        };
         if let Ok(meta) = fs.metadata(dest) {
             if !meta.is_dir {
                 item.action = Action::Conflict {
@@ -68,11 +70,15 @@ pub fn reconcile<F: FileSystem>(
         }
     }
 
-    // 3. Duplicates: hash all Move sources and detect identical bytes within
-    //    the same MovieId.
+    // 3. Duplicates: hash Move *video* sources and detect identical bytes
+    //    within the same MovieId. Sidecars are never duplicates of videos even
+    //    if their bytes match.
     let mut hash_buckets: HashMap<(MovieId, Hash), Vec<usize>> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
         if !matches!(item.action, Action::Move { .. }) {
+            continue;
+        }
+        if item.class != mm_core::classify::FileClass::Video {
             continue;
         }
         let hash = fs.hash(&item.source, &mm_core::fs::CancelToken::new())?;

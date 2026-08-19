@@ -1,7 +1,7 @@
 //! Built-in defaults (§7, §5.5).
 
 use super::{
-    Behaviour, Cleanup, Conflict, Config, Concurrency, Extensions, Moves, MovieNaming, MusicNaming,
+    Behaviour, Cleanup, Concurrency, Config, Conflict, Extensions, Moves, MovieNaming, MusicNaming,
     Naming, Providers, TvNaming,
 };
 use crate::identity::SourcePreference;
@@ -29,23 +29,44 @@ pub fn default_config() -> Config {
 pub fn default_extensions() -> Extensions {
     Extensions {
         video: vec![
-            "mkv".into(), "mp4".into(), "m4v".into(), "avi".into(), "mov".into(),
-            "wmv".into(), "ts".into(), "m2ts".into(), "webm".into(),
+            "mkv".into(),
+            "mp4".into(),
+            "m4v".into(),
+            "avi".into(),
+            "mov".into(),
+            "wmv".into(),
+            "ts".into(),
+            "m2ts".into(),
+            "webm".into(),
         ],
         audio: vec![
-            "mp3".into(), "flac".into(), "m4a".into(), "aac".into(), "ogg".into(),
-            "opus".into(), "wav".into(), "wma".into(), "alac".into(),
+            "mp3".into(),
+            "flac".into(),
+            "m4a".into(),
+            "aac".into(),
+            "ogg".into(),
+            "opus".into(),
+            "wav".into(),
+            "wma".into(),
+            "alac".into(),
         ],
         subtitle: vec![
-            "srt".into(), "ass".into(), "ssa".into(), "sub".into(), "idx".into(),
-            "vtt".into(), "sup".into(),
+            "srt".into(),
+            "ass".into(),
+            "ssa".into(),
+            "sub".into(),
+            "idx".into(),
+            "vtt".into(),
+            "sup".into(),
         ],
         artwork: vec![
-            "jpg".into(), "jpeg".into(), "png".into(), "webp".into(), "tbn".into(),
+            "jpg".into(),
+            "jpeg".into(),
+            "png".into(),
+            "webp".into(),
+            "tbn".into(),
         ],
-        metadata: vec![
-            "nfo".into(), "xml".into(), "json".into(), "cue".into(),
-        ],
+        metadata: vec!["nfo".into(), "xml".into(), "json".into(), "cue".into()],
     }
 }
 

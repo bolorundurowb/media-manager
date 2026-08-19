@@ -9,21 +9,19 @@ use std::path::{Path, PathBuf};
 use mm_core::classify::{FileClass, MediaKind};
 use mm_core::config::Config;
 use mm_core::error::{Diagnostic, Severity};
-    use mm_core::fs::FileSystem;
-    use mm_core::identity::{MovieId, Norm};
-    use mm_core::plan::{
-        Action, DirRemoval, FieldName, ItemId, Plan, PlanItem, Readiness,
-    };
+use mm_core::fs::FileSystem;
+use mm_core::identity::{MovieId, Norm};
+use mm_core::plan::{Action, DirRemoval, FieldName, ItemId, Plan, PlanItem, Readiness};
 use mm_core::volume::VolumeSemantics;
 use mm_parse::parse_movie;
 
 use crate::classify::classify;
-use crate::group::{group_movies, MovieGroup};
+use crate::group::{MovieGroup, group_movies};
 use crate::reconcile::reconcile;
-use crate::resolve::{resolve_movie, ResolvedMovie};
-use crate::route::{route, RouteContext};
-use crate::scan::{scan, ScannedFile};
-use crate::validate::{validate_destination, Validation};
+use crate::resolve::{ResolvedMovie, resolve_movie};
+use crate::route::{RouteContext, route};
+use crate::scan::{ScannedFile, scan};
+use crate::validate::{Validation, validate_destination};
 
 /// Internal planner item, mutated across stages.
 #[derive(Debug, Clone)]
@@ -57,8 +55,15 @@ pub struct Planner<'a, F: FileSystem> {
 }
 
 impl<'a, F: FileSystem> Planner<'a, F> {
-    pub fn new(fs: &'a F, root: &'a Path, kind: MediaKind, cfg: &'a Config) -> Result<Self, std::io::Error> {
-        let volume = fs.volume_semantics(root).unwrap_or_else(|_| VolumeSemantics::conservative());
+    pub fn new(
+        fs: &'a F,
+        root: &'a Path,
+        kind: MediaKind,
+        cfg: &'a Config,
+    ) -> Result<Self, std::io::Error> {
+        let volume = fs
+            .volume_semantics(root)
+            .unwrap_or_else(|_| VolumeSemantics::conservative());
         Ok(Planner {
             fs,
             root,
@@ -84,7 +89,8 @@ impl<'a, F: FileSystem> Planner<'a, F> {
         // 1. Scan
         let mut scanned = scan(self.fs, self.root, self.cfg)?;
         if scanned.is_empty() {
-            plan.diagnostics.push(Diagnostic::warning("scan", "no files found"));
+            plan.diagnostics
+                .push(Diagnostic::warning("scan", "no files found"));
             return Ok(plan);
         }
 
@@ -120,7 +126,13 @@ impl<'a, F: FileSystem> Planner<'a, F> {
             .enumerate()
             .map(|(i, f)| {
                 let (resolved, parsed, movie_id, readiness) = if f.class == FileClass::Video {
-                    match parse_movie(f.absolute.file_name().unwrap_or_default().to_string_lossy().as_ref()) {
+                    match parse_movie(
+                        f.absolute
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .as_ref(),
+                    ) {
                         mm_parse::MediaParse::Movie(p) => {
                             let r = resolve_movie(&p, self.cfg);
                             let title_norm = r
@@ -220,7 +232,9 @@ impl<'a, F: FileSystem> Planner<'a, F> {
                 continue;
             }
 
-            let Some(resolved) = &item.resolved else { continue };
+            let Some(resolved) = &item.resolved else {
+                continue;
+            };
             let ctx = RouteContext {
                 root: self.root,
                 id: &item.movie_id,
@@ -237,15 +251,15 @@ impl<'a, F: FileSystem> Planner<'a, F> {
 
     fn validate_items(&self, items: &mut [PlanItemInternal], plan: &mut Plan) {
         for item in items.iter_mut() {
-            let Some(dest) = &item.destination else { continue };
-            let rel = item.destination_relative.clone().unwrap_or_else(|| dest.clone());
-            let (validation, mut diags) = validate_destination(
-                self.root,
-                &item.source,
-                dest,
-                &rel,
-                &self.volume,
-            );
+            let Some(dest) = &item.destination else {
+                continue;
+            };
+            let rel = item
+                .destination_relative
+                .clone()
+                .unwrap_or_else(|| dest.clone());
+            let (validation, mut diags) =
+                validate_destination(self.root, &item.source, dest, &rel, &self.volume);
             plan.diagnostics.append(&mut diags);
 
             match validation {
@@ -326,7 +340,7 @@ impl<'a, F: FileSystem> Planner<'a, F> {
             }
         }
 
-        // Directory removals: deepest-first empty source directories.
+        // Directory removals: deepest-first empty source directories, but never root.
         let mut removals: Vec<PathBuf> = plan
             .items
             .iter()
@@ -334,6 +348,7 @@ impl<'a, F: FileSystem> Planner<'a, F> {
                 Action::Move { from, .. } => from.parent().map(Path::to_path_buf),
                 _ => None,
             })
+            .filter(|p| p != self.root)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -349,7 +364,10 @@ impl<'a, F: FileSystem> Planner<'a, F> {
 }
 
 fn is_sidecar(class: FileClass) -> bool {
-    matches!(class, FileClass::Subtitle | FileClass::Artwork | FileClass::Metadata)
+    matches!(
+        class,
+        FileClass::Subtitle | FileClass::Artwork | FileClass::Metadata
+    )
 }
 
 fn choose_sidecar_parent(

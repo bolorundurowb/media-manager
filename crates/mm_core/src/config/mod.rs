@@ -181,11 +181,7 @@ impl Default for Cleanup {
         Cleanup {
             remove_empty_dirs: true,
             tolerate_junk: false,
-            junk_names: vec![
-                ".DS_Store".into(),
-                "Thumbs.db".into(),
-                "desktop.ini".into(),
-            ],
+            junk_names: vec![".DS_Store".into(), "Thumbs.db".into(), "desktop.ini".into()],
         }
     }
 }
@@ -304,7 +300,10 @@ impl Default for MusicNaming {
 impl Config {
     /// Load the fully-resolved config from the layered sources (§7). Returns
     /// the config and the path it was loaded from, if any.
-    pub fn layered(root: Option<&Path>, cli_overrides: &ConfigOverrides) -> Result<Self, CoreError> {
+    pub fn layered(
+        root: Option<&Path>,
+        cli_overrides: &ConfigOverrides,
+    ) -> Result<Self, CoreError> {
         let mut cfg = default::default_config();
 
         // system + user config via the directories crate.
@@ -461,7 +460,15 @@ pub fn detection_failure_severity() -> Severity {
 /// Ordered source list for iteration.
 pub fn all_sources() -> [crate::provenance::Source; 7] {
     use crate::provenance::Source::*;
-    [EmbeddedTag, ContainerHeader, Nfo, Provider, Filename, ParentDir, Fallback]
+    [
+        EmbeddedTag,
+        ContainerHeader,
+        Nfo,
+        Provider,
+        Filename,
+        ParentDir,
+        Fallback,
+    ]
 }
 
 /// Convenience: build a `BTreeMap` summary for `config print`.

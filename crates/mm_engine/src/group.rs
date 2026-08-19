@@ -33,7 +33,12 @@ pub fn group_movies(items: &[(usize, &ResolvedMovie)]) -> Vec<MovieGroup> {
     for (title_norm, indices) in by_title {
         let years: Vec<u16> = indices
             .iter()
-            .filter_map(|i| items.iter().find(|(idx, _)| idx == i).and_then(|(_, m)| m.year.as_value().copied()))
+            .filter_map(|i| {
+                items
+                    .iter()
+                    .find(|(idx, _)| idx == i)
+                    .and_then(|(_, m)| m.year.as_value().copied())
+            })
             .collect();
         let canonical_year = pick_canonical_year(&years);
 

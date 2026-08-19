@@ -33,11 +33,9 @@ impl Norm {
         // NFC for storage and comparison (§2.4).
         let nfc = display.chars().nfc().collect::<String>();
         let key = normalise_key(&nfc, opts);
-        Norm {
-            key,
-            display: nfc,
-        }
-    }    /// Empty normalised value.
+        Norm { key, display: nfc }
+    }
+    /// Empty normalised value.
     pub fn empty() -> Self {
         Norm {
             key: String::new(),
@@ -77,12 +75,36 @@ fn normalise_key(s: &str, opts: NormOptions) -> String {
 fn is_collapsible_punct(ch: char) -> bool {
     matches!(
         ch,
-        '-' | '_' | '.' | ',' | ';' | ':' | '/' | '\\' | '(' | ')' | '[' | ']' | '{' | '}' | '\'' | '"' | '`' | '+' | '=' | '*' | '&' | '|' | '!' | '?'
+        '-' | '_'
+            | '.'
+            | ','
+            | ';'
+            | ':'
+            | '/'
+            | '\\'
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '\''
+            | '"'
+            | '`'
+            | '+'
+            | '='
+            | '*'
+            | '&'
+            | '|'
+            | '!'
+            | '?'
     )
 }
 
 fn strip_leading_article(s: &str) -> &str {
-    for art in ["the ", "a ", "an ", "le ", "la ", "les ", "el ", "los ", "las ", "der ", "die ", "das "] {
+    for art in [
+        "the ", "a ", "an ", "le ", "la ", "les ", "el ", "los ", "las ", "der ", "die ", "das ",
+    ] {
         if s.starts_with(art) {
             return &s[art.len()..];
         }
@@ -340,7 +362,11 @@ mod tests {
     fn pick_best_prefers_higher_source() {
         let prefs = SourcePreference::conservative_default();
         let a = Field::known("from-file".to_string(), Source::Filename, Confidence::High);
-        let b = Field::known("from-tag".to_string(), Source::EmbeddedTag, Confidence::High);
+        let b = Field::known(
+            "from-tag".to_string(),
+            Source::EmbeddedTag,
+            Confidence::High,
+        );
         let best = pick_best(&a, &b, &prefs);
         assert_eq!(best.as_value().unwrap(), &"from-tag".to_string());
     }

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use mm_core::classify::FileClass;
 use mm_core::config::Config;
 use mm_core::identity::MovieId;
-use mm_core::path::{sanitise_component, SanitiseMap};
+use mm_core::path::{SanitiseMap, sanitise_component};
 use mm_core::template::ValueSource;
 use mm_core::volume::VolumeSemantics;
 
@@ -26,10 +26,7 @@ pub struct RouteContext<'a> {
 
 /// Route a single file to its destination paths (absolute and root-relative).
 pub fn route(ctx: &RouteContext, class: FileClass, original: &Path) -> Option<(PathBuf, PathBuf)> {
-    let ext = original
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = original.extension().and_then(|e| e.to_str()).unwrap_or("");
     let mut parts = match class {
         FileClass::Video => route_video(ctx),
         FileClass::Subtitle => route_subtitle(ctx),

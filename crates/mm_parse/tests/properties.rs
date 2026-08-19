@@ -12,9 +12,9 @@
 
 use std::collections::HashMap;
 
-use mm_core::template::ValueSource;
 use mm_core::Template;
-use mm_parse::{parse_movie_filename, ParseOptions};
+use mm_core::template::ValueSource;
+use mm_parse::{ParseOptions, parse_movie_filename};
 use proptest::prelude::*;
 
 struct FieldMap(HashMap<String, String>);

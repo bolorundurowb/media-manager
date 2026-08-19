@@ -50,7 +50,12 @@ pub fn validate_destination(
             "validate",
             format!("path too long ({} > {})", total_len, volume.max_total),
         ));
-        return (Validation::TooLong { path: absolute_dest.to_path_buf() }, diagnostics);
+        return (
+            Validation::TooLong {
+                path: absolute_dest.to_path_buf(),
+            },
+            diagnostics,
+        );
     }
 
     // NoOp: source and destination are the same file.

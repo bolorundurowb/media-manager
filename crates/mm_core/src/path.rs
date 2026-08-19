@@ -64,7 +64,9 @@ pub fn sanitise_component(name: &str, map: &SanitiseMap, limit: ComponentLimit) 
     s = collapse_whitespace(&s);
 
     // 4. Strip trailing dots and spaces (applied *before* reserved-name check).
-    s = s.trim_end_matches(|c: char| c == '.' || c == ' ').to_string();
+    s = s
+        .trim_end_matches(|c: char| c == '.' || c == ' ')
+        .to_string();
     s = s.trim_start_matches(|c: char| c == ' ').to_string();
 
     // 5. Reserved device-name check (Windows). The rule is the name up to the
@@ -81,7 +83,9 @@ pub fn sanitise_component(name: &str, map: &SanitiseMap, limit: ComponentLimit) 
     if !limit.fits(&s) {
         s = limit.truncate(&s);
         // re-strip trailing dots after truncation
-        s = s.trim_end_matches(|c: char| c == '.' || c == ' ').to_string();
+        s = s
+            .trim_end_matches(|c: char| c == '.' || c == ' ')
+            .to_string();
         // reserved-name check again post-truncation (paranoia)
         if is_reserved_device_name(&s) {
             insert_reserved_suffix(&mut s);
@@ -91,11 +95,7 @@ pub fn sanitise_component(name: &str, map: &SanitiseMap, limit: ComponentLimit) 
     // 7. Trim once more in case truncation left a dangling separator run.
     let s = s.trim_matches(|c: char| c == ' ' || c == '.').to_string();
 
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
+    if s.is_empty() { None } else { Some(s) }
 }
 
 fn collapse_whitespace(s: &str) -> String {
@@ -123,9 +123,7 @@ pub fn is_reserved_device_name(name: &str) -> bool {
         None => name,
     };
     let lower = stem.to_ascii_lowercase();
-    const FIXED: &[&str] = &[
-        "con", "prn", "aux", "nul", "conin$", "conout$", "clock$",
-    ];
+    const FIXED: &[&str] = &["con", "prn", "aux", "nul", "conin$", "conout$", "clock$"];
     if FIXED.contains(&lower.as_str()) {
         return true;
     }
@@ -134,7 +132,12 @@ pub fn is_reserved_device_name(name: &str) -> bool {
     // 4-byte boundary fall inside a multi-byte character and panic.
     if lower.is_ascii() && lower.len() == 4 {
         let (pfx, num) = lower.split_at(3);
-        if matches!(pfx, "com" | "lpt") && matches!(num, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9") {
+        if matches!(pfx, "com" | "lpt")
+            && matches!(
+                num,
+                "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+            )
+        {
             return true;
         }
     }
@@ -188,7 +191,8 @@ mod tests {
     #[test]
     fn sanitises_colon_and_question() {
         let map = SanitiseMap::default();
-        let s = sanitise_component("Movie: Title?", &map, VolumeSemantics::ntfs().max_component).unwrap();
+        let s = sanitise_component("Movie: Title?", &map, VolumeSemantics::ntfs().max_component)
+            .unwrap();
         assert_eq!(s, "Movie - Title");
     }
 

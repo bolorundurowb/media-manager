@@ -13,9 +13,9 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::fs::{CancelToken, DirEntry, FileId, FileMeta, Hash, ReadDirIter};
 use crate::fs::FileSystem;
-use crate::volume::{ComponentLimit, NoReplaceStrategy, VolumeSemantics};
+use crate::fs::{CancelToken, DirEntry, FileId, FileMeta, Hash, ReadDirIter};
+use crate::volume::{NoReplaceStrategy, VolumeSemantics};
 
 /// The production filesystem.
 #[derive(Debug, Default, Clone)]
@@ -499,9 +499,7 @@ fn platform_case_sensitivity(c: &std::ffi::CString) -> Option<(bool, bool)> {
         }
         // FAT/exFAT: case-insensitive. `libc` has no `EXFAT_SUPER_MAGIC`
         // constant, so it's a local literal (linux/magic.h).
-        v if v == libc::MSDOS_SUPER_MAGIC as u32 || v == EXFAT_SUPER_MAGIC => {
-            Some((false, false))
-        }
+        v if v == libc::MSDOS_SUPER_MAGIC as u32 || v == EXFAT_SUPER_MAGIC => Some((false, false)),
         // Network / FUSE-backed mounts (NFS, CIFS, SMB2, generic FUSE
         // passthrough — sshfs, rclone, ntfs-3g, …): the far end could be
         // anything, and per §2.5 this is exactly where the conservative

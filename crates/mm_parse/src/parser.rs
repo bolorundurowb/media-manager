@@ -7,7 +7,8 @@ use mm_core::{Confidence, Source};
 
 use crate::extractors::{
     AudioFormatExtractor, Claim, EditionExtractor, Extractor, HdrExtractor, ParseField,
-    ReleaseGroupExtractor, ResolutionExtractor, SourceExtractor, VideoCodecExtractor, YearExtractor,
+    ReleaseGroupExtractor, ResolutionExtractor, SourceExtractor, VideoCodecExtractor,
+    YearExtractor,
 };
 use crate::model::{MediaParse, ParseOptions, ParsedMovie, known};
 use crate::tokens::{normalise, tokenize};
@@ -51,7 +52,11 @@ pub fn parse_movie_filename(filename: &str, opts: &ParseOptions) -> ParsedMovie 
     }
 
     // Assign title from the leading residual run (before the first claimed tag).
-    let first_anchor = claimed.iter().map(|(s, _)| *s).min().unwrap_or(normalised.len());
+    let first_anchor = claimed
+        .iter()
+        .map(|(s, _)| *s)
+        .min()
+        .unwrap_or(normalised.len());
     let title_text: String = tokens
         .iter()
         .filter(|t| t.end <= first_anchor)
@@ -72,9 +77,7 @@ pub fn parse_movie(filename: &str) -> MediaParse {
 }
 
 fn overlaps(claimed: &[(usize, usize)], start: usize, end: usize) -> bool {
-    claimed
-        .iter()
-        .any(|(cs, ce)| start < *ce && end > *cs)
+    claimed.iter().any(|(cs, ce)| start < *ce && end > *cs)
 }
 
 fn set_field(movie: &mut ParsedMovie, claim: Claim) {

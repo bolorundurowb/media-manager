@@ -11,31 +11,15 @@ pub fn resolution_patterns() -> &'static [&'static str] {
 
 pub fn source_patterns() -> &'static [&'static str] {
     &[
-        "REMUX",
-        "BluRay",
-        "BDRip",
-        "BRRip",
-        "WEB-DL",
-        "WEBDL",
-        "WEB-Rip",
-        "WEBRip",
-        "HDRip",
-        "DVDRip",
-        "DVD-Rip",
-        "HDTV",
-        "PDTV",
-        "VHSRip",
-        "CAM",
-        "TS",
-        "TC",
-        "SCR",
-        "R5",
-        "LD",
+        "REMUX", "BluRay", "BDRip", "BRRip", "WEB-DL", "WEBDL", "WEB-Rip", "WEBRip", "HDRip",
+        "DVDRip", "DVD-Rip", "HDTV", "PDTV", "VHSRip", "CAM", "TS", "TC", "SCR", "R5", "LD",
     ]
 }
 
 pub fn video_codec_patterns() -> &'static [&'static str] {
-    &["x265", "x264", "h265", "h264", "HEVC", "AVC", "XviD", "DivX", "AV1", "VP9"]
+    &[
+        "x265", "x264", "h265", "h264", "HEVC", "AVC", "XviD", "DivX", "AV1", "VP9",
+    ]
 }
 
 pub fn audio_patterns() -> &'static [&'static str] {

@@ -1,6 +1,6 @@
 //! Classify stage (§2.3, §5).
 
-use mm_core::classify::{is_artwork_stem, is_metadata_ext, FileClass};
+use mm_core::classify::{FileClass, is_artwork_stem, is_metadata_ext};
 use mm_core::config::Config;
 
 use crate::scan::ScannedFile;

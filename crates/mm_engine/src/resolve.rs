@@ -3,8 +3,8 @@
 //! Merge candidates per field via the per-field source-preference table. Phase
 //! 2 only has filename-sourced candidates; probing (Phase 4) will add more.
 
-use mm_core::config::Config;
 use mm_core::Field;
+use mm_core::config::Config;
 use mm_core::plan::{FieldName, Readiness};
 
 use mm_parse::ParsedMovie;

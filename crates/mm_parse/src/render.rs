@@ -51,9 +51,6 @@ mod tests {
             video_codec: known("x264".into(), Source::Filename, Confidence::Medium),
             ..Default::default()
         };
-        assert_eq!(
-            render_movie(&m),
-            "Inception (2010) - 1080p - BluRay - x264"
-        );
+        assert_eq!(render_movie(&m), "Inception (2010) - 1080p - BluRay - x264");
     }
 }

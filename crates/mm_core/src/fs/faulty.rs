@@ -7,12 +7,12 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
-use crate::fs::{CancelToken, FileId, FileMeta, Hash, ReadDirIter};
 use crate::fs::FileSystem;
+use crate::fs::{CancelToken, FileId, FileMeta, Hash, ReadDirIter};
 use crate::volume::VolumeSemantics;
 
 /// Which method to inject a fault into.
@@ -50,9 +50,7 @@ impl InjectErr {
     fn into_io(self) -> io::Error {
         match self {
             InjectErr::PermissionDenied => io::Error::from(io::ErrorKind::PermissionDenied),
-            InjectErr::ReadOnlyFilesystem => {
-                io::Error::from(io::ErrorKind::ReadOnlyFilesystem)
-            }
+            InjectErr::ReadOnlyFilesystem => io::Error::from(io::ErrorKind::ReadOnlyFilesystem),
             InjectErr::CrossesDevices => io::Error::from(io::ErrorKind::CrossesDevices),
             InjectErr::NotFound => io::Error::from(io::ErrorKind::NotFound),
             InjectErr::AlreadyExists => io::Error::from(io::ErrorKind::AlreadyExists),

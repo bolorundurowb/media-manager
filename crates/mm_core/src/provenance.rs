@@ -129,7 +129,13 @@ impl<T> Field<T> {
     /// Per §2.1 a fallback-sourced field can only produce
     /// [`crate::error::Severity::Warning`] outcomes, never a move.
     pub fn is_fallback(&self) -> bool {
-        matches!(self, Field::Known { source: Source::Fallback, .. })
+        matches!(
+            self,
+            Field::Known {
+                source: Source::Fallback,
+                ..
+            }
+        )
     }
 
     /// Transform the inner value of a `Known` field, preserving provenance.

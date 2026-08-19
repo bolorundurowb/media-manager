@@ -7,9 +7,6 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use mm_core::{Confidence, Field, Source};
-
-use crate::model::known;
 use crate::tokens::Token;
 use crate::vocab;
 
@@ -89,7 +86,12 @@ impl Extractor for YearExtractor {
         for tok in tokens.iter().rev() {
             if let Ok(y) = tok.text.parse::<u16>() {
                 if range.contains(&y) && !would_empty_title(tokens, tok.start, tok.end) {
-                    return Some(Claim::new(ParseField::Year, y.to_string(), tok.start, tok.end));
+                    return Some(Claim::new(
+                        ParseField::Year,
+                        y.to_string(),
+                        tok.start,
+                        tok.end,
+                    ));
                 }
             }
         }
@@ -134,12 +136,7 @@ macro_rules! vocab_extractor {
                     for pat in vocab {
                         let pat_norm = pat.to_ascii_lowercase();
                         if probe == pat_norm || probe_inner == pat_norm {
-                            return Some(Claim::new(
-                                $field,
-                                pat.to_string(),
-                                tok.start,
-                                tok.end,
-                            ));
+                            return Some(Claim::new($field, pat.to_string(), tok.start, tok.end));
                         }
                     }
                 }
@@ -149,10 +146,22 @@ macro_rules! vocab_extractor {
     };
 }
 
-vocab_extractor!(ResolutionExtractor, ParseField::Resolution, resolution_patterns);
+vocab_extractor!(
+    ResolutionExtractor,
+    ParseField::Resolution,
+    resolution_patterns
+);
 vocab_extractor!(SourceExtractor, ParseField::Source, source_patterns);
-vocab_extractor!(VideoCodecExtractor, ParseField::VideoCodec, video_codec_patterns);
-vocab_extractor!(AudioFormatExtractor, ParseField::AudioFormat, audio_patterns);
+vocab_extractor!(
+    VideoCodecExtractor,
+    ParseField::VideoCodec,
+    video_codec_patterns
+);
+vocab_extractor!(
+    AudioFormatExtractor,
+    ParseField::AudioFormat,
+    audio_patterns
+);
 vocab_extractor!(HdrExtractor, ParseField::Hdr, hdr_patterns);
 
 // Edition needs multi-token matching, so it gets a regex implementation.

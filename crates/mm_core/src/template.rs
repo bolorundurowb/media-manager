@@ -181,9 +181,9 @@ fn parse_segments(raw: &str) -> Result<Vec<Segment>, CoreError> {
             if !buf.is_empty() {
                 segs.push(Segment::Literal(std::mem::take(&mut buf)));
             }
-            let close = raw[i..].find('}').ok_or_else(|| {
-                CoreError::InvalidTemplate(format!("unmatched '{{' at byte {i}"))
-            })?;
+            let close = raw[i..]
+                .find('}')
+                .ok_or_else(|| CoreError::InvalidTemplate(format!("unmatched '{{' at byte {i}")))?;
             let name_full = &raw[i + 1..i + close];
             let name = name_full.split(':').next().unwrap_or(name_full);
             if !KNOWN_PLACEHOLDERS.contains(&name) {
