@@ -9,8 +9,9 @@ use std::sync::OnceLock;
 use regex::Regex;
 use unicode_normalization::UnicodeNormalization;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LibraryKind {
+    #[default]
     Movies,
     Tv,
 }

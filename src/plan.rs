@@ -71,7 +71,7 @@ fn plan_movie_group(root: &Path, group: MovieGroup, plan: &mut Plan) {
     let dest_dir = root.join(&folder_name);
     plan.dirs.push(dest_dir.clone());
 
-    let mut claimed: HashSet<PathBuf> = HashSet::new();
+    let mut claimed: HashSet<String> = HashSet::new();
 
     for folder in &group.folders {
         plan.source_folders.push(folder.folder.path.clone());
@@ -136,7 +136,7 @@ fn plan_tv_group(root: &Path, group: TvShowGroup, plan: &mut Plan) {
     let show_dir = root.join(&show_dir_name);
     plan.dirs.push(show_dir.clone());
 
-    let mut claimed: HashSet<PathBuf> = HashSet::new();
+    let mut claimed: HashSet<String> = HashSet::new();
 
     for (season, folders) in &group.seasons {
         let season_dir = show_dir.join(season_folder_name(*season));
@@ -196,7 +196,7 @@ fn plan_tv_group(root: &Path, group: TvShowGroup, plan: &mut Plan) {
     }
 }
 
-fn claim_dest(plan: &mut Plan, claimed: &mut HashSet<PathBuf>, from: &Path, dest: &Path) -> bool {
+fn claim_dest(plan: &mut Plan, claimed: &mut HashSet<String>, from: &Path, dest: &Path) -> bool {
     if from == dest {
         tracing::debug!(path = %from.display(), "already at destination");
         return false;
@@ -208,7 +208,11 @@ fn claim_dest(plan: &mut Plan, claimed: &mut HashSet<PathBuf>, from: &Path, dest
         );
         return false;
     }
-    if !claimed.insert(dest.to_path_buf()) {
+    // Windows and macOS filesystems are case-insensitive by default, and
+    // this project targets Windows first, so two planned destinations that
+    // differ only by case are treated as a collision everywhere, not just
+    // on the platform running the plan.
+    if !claimed.insert(dest_key(dest)) {
         plan.skip(
             from.to_path_buf(),
             format!("duplicate destination in plan: {}", dest.display()),
@@ -216,6 +220,34 @@ fn claim_dest(plan: &mut Plan, claimed: &mut HashSet<PathBuf>, from: &Path, dest
         return false;
     }
     true
+}
+
+/// Case-folded comparison key for a destination path, used to catch
+/// destinations that differ only by case (a collision on case-insensitive
+/// filesystems).
+fn dest_key(path: &Path) -> String {
+    path.to_string_lossy().to_ascii_lowercase()
+}
+
+/// Conservative path-length ceiling. Windows historically caps full paths at
+/// 260 characters without opting into long-path support; other platforms
+/// are far more permissive, but a generous fixed ceiling still catches
+/// pathological cases without needing per-OS detection at runtime.
+#[cfg(windows)]
+const MAX_PATH_LEN: usize = 260;
+#[cfg(not(windows))]
+const MAX_PATH_LEN: usize = 4096;
+
+/// Most filesystems (NTFS, ext4, APFS, ...) cap a single path component at
+/// 255 bytes/UTF-16 units.
+const MAX_COMPONENT_LEN: usize = 255;
+
+fn path_too_long(path: &Path) -> bool {
+    if path.as_os_str().len() >= MAX_PATH_LEN {
+        return true;
+    }
+    path.components()
+        .any(|c| c.as_os_str().len() > MAX_COMPONENT_LEN)
 }
 
 fn plan_video_and_subs(plan: &mut Plan, video: &Path, dest: &Path) {
@@ -314,7 +346,7 @@ fn plan_extras(
     videos: &[PathBuf],
     dest_dir: &Path,
     plan: &mut Plan,
-    claimed: &mut HashSet<PathBuf>,
+    claimed: &mut HashSet<String>,
 ) {
     let mut dirs = vec![folder.to_path_buf()];
     for video in videos {
@@ -371,6 +403,10 @@ fn validate_plan(root: &Path, plan: &mut Plan) {
                 i,
                 format!("destination escapes library root: {}", mv.to.display()),
             ));
+            continue;
+        }
+        if path_too_long(&mv.to) {
+            drop_moves.push((i, format!("destination path too long: {}", mv.to.display())));
             continue;
         }
         if let Some(parent) = mv.from.parent() {

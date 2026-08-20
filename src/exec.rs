@@ -1,10 +1,18 @@
 //! Apply a plan: create directories, rename files, remove emptied source folders.
+//!
+//! Every step goes through a `FileSystem` (real disk for the CLI, an
+//! in-memory + fault-injecting backend in tests) and is checked against a
+//! `CancelToken` before it starts, so a Ctrl+C (or a future GUI Stop button)
+//! never interrupts a rename that has already begun — it only stops the next
+//! one from starting. Nothing already moved is ever rolled back. Every
+//! attempt is also appended to the run's `Journal` for crash diagnosis.
 
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use crate::cancel::CancelToken;
+use crate::journal::Journal;
 use crate::plan::{MoveOp, Plan, Skip};
+use crate::vfs::FileSystem;
 
 #[derive(Debug, Default)]
 pub struct ExecReport {
@@ -12,19 +20,36 @@ pub struct ExecReport {
     pub moved: usize,
     pub failed: Vec<Skip>,
     pub removed_dirs: usize,
+    /// Set when cancellation was requested before the plan finished. Items
+    /// not yet started are simply absent from `moved`/`failed`.
+    pub cancelled: bool,
 }
 
-pub fn execute(plan: &Plan) -> ExecReport {
+pub fn execute(
+    plan: &Plan,
+    fs: &dyn FileSystem,
+    cancel: &CancelToken,
+    journal: &mut Journal,
+) -> ExecReport {
     let mut report = ExecReport::default();
 
     for dir in &plan.dirs {
-        match fs::create_dir_all(dir) {
+        if cancel.is_cancelled() {
+            tracing::warn!("cancelled before all directories were created");
+            journal.record("CANCELLED before directory creation finished");
+            report.cancelled = true;
+            return report;
+        }
+        journal.record(&format!("CREATE_DIR START {}", dir.display()));
+        match fs.create_dir_all(dir) {
             Ok(()) => {
                 tracing::debug!(path = %dir.display(), "create dir");
+                journal.record(&format!("CREATE_DIR OK {}", dir.display()));
                 report.created_dirs += 1;
             }
             Err(err) => {
                 tracing::error!(path = %dir.display(), error = %err, "failed to create directory");
+                journal.record(&format!("CREATE_DIR FAIL {} ({err})", dir.display()));
                 report.failed.push(Skip {
                     path: dir.clone(),
                     reason: format!("create dir failed: {err}"),
@@ -35,13 +60,31 @@ pub fn execute(plan: &Plan) -> ExecReport {
 
     if !report.failed.is_empty() {
         tracing::error!("aborting file moves because directory creation failed");
+        journal.record("ABORT moves: directory creation failed");
         return report;
     }
 
     for mv in &plan.moves {
-        match move_no_overwrite(mv) {
+        if cancel.is_cancelled() {
+            let remaining = plan.moves.len() - report.moved - report.failed.len();
+            tracing::warn!(remaining, "cancelled; not starting further moves");
+            journal.record("CANCELLED before all moves finished");
+            report.cancelled = true;
+            return report;
+        }
+        journal.record(&format!(
+            "MOVE START {} -> {}",
+            mv.from.display(),
+            mv.to.display()
+        ));
+        match move_no_overwrite(fs, mv) {
             Ok(()) => {
                 tracing::info!(from = %mv.from.display(), to = %mv.to.display(), "moved");
+                journal.record(&format!(
+                    "MOVE OK {} -> {}",
+                    mv.from.display(),
+                    mv.to.display()
+                ));
                 report.moved += 1;
             }
             Err(err) => {
@@ -51,6 +94,11 @@ pub fn execute(plan: &Plan) -> ExecReport {
                     error = %err,
                     "move failed"
                 );
+                journal.record(&format!(
+                    "MOVE FAIL {} -> {} ({err})",
+                    mv.from.display(),
+                    mv.to.display()
+                ));
                 report.failed.push(Skip {
                     path: mv.from.clone(),
                     reason: format!("move failed: {err}"),
@@ -60,14 +108,22 @@ pub fn execute(plan: &Plan) -> ExecReport {
     }
 
     for folder in &plan.source_folders {
-        match remove_if_empty(folder) {
+        if cancel.is_cancelled() {
+            tracing::warn!("cancelled before all emptied source folders were removed");
+            journal.record("CANCELLED before source-folder cleanup finished");
+            report.cancelled = true;
+            return report;
+        }
+        match remove_if_empty(fs, folder) {
             Ok(true) => {
                 tracing::debug!(path = %folder.display(), "removed empty source folder");
+                journal.record(&format!("REMOVE_DIR OK {}", folder.display()));
                 report.removed_dirs += 1;
             }
             Ok(false) => {}
             Err(err) => {
                 tracing::warn!(path = %folder.display(), error = %err, "could not remove source folder");
+                journal.record(&format!("REMOVE_DIR FAIL {} ({err})", folder.display()));
             }
         }
     }
@@ -75,44 +131,169 @@ pub fn execute(plan: &Plan) -> ExecReport {
     report
 }
 
-fn move_no_overwrite(mv: &MoveOp) -> io::Result<()> {
-    if mv.to.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("destination exists: {}", mv.to.display()),
-        ));
-    }
-    if let Some(parent) = mv.to.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::rename(&mv.from, &mv.to)
+fn move_no_overwrite(fs: &dyn FileSystem, mv: &MoveOp) -> std::io::Result<()> {
+    fs.rename_no_replace(&mv.from, &mv.to)
 }
 
-fn remove_if_empty(dir: &Path) -> io::Result<bool> {
-    if !dir.exists() {
+fn remove_if_empty(fs: &dyn FileSystem, dir: &Path) -> std::io::Result<bool> {
+    if !fs.exists(dir) {
         return Ok(false);
     }
-    remove_empty_tree(dir)
+    remove_empty_tree(fs, dir)
 }
 
-fn remove_empty_tree(dir: &Path) -> io::Result<bool> {
-    if !dir.is_dir() {
+fn remove_empty_tree(fs: &dyn FileSystem, dir: &Path) -> std::io::Result<bool> {
+    if !fs.is_dir(dir) {
         return Ok(false);
     }
-    let mut children: Vec<PathBuf> = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        children.push(entry?.path());
-    }
+    let children = fs.read_dir(dir)?;
     for child in &children {
-        if child.is_dir() {
-            remove_empty_tree(child)?;
+        if fs.is_dir(child) {
+            remove_empty_tree(fs, child)?;
         }
     }
-    let remaining = fs::read_dir(dir)?.next().is_none();
+    let remaining = fs.read_dir(dir)?.is_empty();
     if remaining {
-        fs::remove_dir(dir)?;
+        fs.remove_empty_dir(dir)?;
         Ok(true)
     } else {
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vfs::{FaultyFileSystem, InMemoryFileSystem};
+    use std::path::PathBuf;
+
+    fn plan_with(dirs: Vec<&str>, moves: Vec<(&str, &str)>, source_folders: Vec<&str>) -> Plan {
+        Plan {
+            dirs: dirs.into_iter().map(PathBuf::from).collect(),
+            moves: moves
+                .into_iter()
+                .map(|(from, to)| MoveOp {
+                    from: PathBuf::from(from),
+                    to: PathBuf::from(to),
+                })
+                .collect(),
+            skips: Vec::new(),
+            source_folders: source_folders.into_iter().map(PathBuf::from).collect(),
+        }
+    }
+
+    #[test]
+    fn happy_path_moves_and_cleans_up() {
+        let fs = InMemoryFileSystem::new().with_file("/root/src/a.mkv");
+        let plan = plan_with(
+            vec!["/root/dest"],
+            vec![("/root/src/a.mkv", "/root/dest/a.mkv")],
+            vec!["/root/src"],
+        );
+        let report = execute(&plan, &fs, &CancelToken::new(), &mut Journal::disabled());
+        assert_eq!(report.moved, 1);
+        assert!(report.failed.is_empty());
+        assert_eq!(report.removed_dirs, 1);
+        assert!(!report.cancelled);
+        assert!(fs.exists(Path::new("/root/dest/a.mkv")));
+        assert!(!fs.exists(Path::new("/root/src/a.mkv")));
+    }
+
+    #[test]
+    fn destination_collision_is_reported_as_failed_not_overwritten() {
+        let fs = InMemoryFileSystem::new()
+            .with_file("/root/src/a.mkv")
+            .with_file("/root/dest/a.mkv");
+        let plan = plan_with(
+            vec!["/root/dest"],
+            vec![("/root/src/a.mkv", "/root/dest/a.mkv")],
+            vec!["/root/src"],
+        );
+        let report = execute(&plan, &fs, &CancelToken::new(), &mut Journal::disabled());
+        assert_eq!(report.moved, 0);
+        assert_eq!(report.failed.len(), 1);
+        // The original destination file must be untouched.
+        assert!(fs.exists(Path::new("/root/dest/a.mkv")));
+        assert!(fs.exists(Path::new("/root/src/a.mkv")));
+    }
+
+    #[test]
+    fn inaccessible_directory_aborts_before_any_move_starts() {
+        let fs = FaultyFileSystem::new(InMemoryFileSystem::new().with_file("/root/src/a.mkv"))
+            .fail_create_dir("/root/dest");
+        let plan = plan_with(
+            vec!["/root/dest"],
+            vec![("/root/src/a.mkv", "/root/dest/a.mkv")],
+            vec!["/root/src"],
+        );
+        let report = execute(&plan, &fs, &CancelToken::new(), &mut Journal::disabled());
+        assert_eq!(report.created_dirs, 0);
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(
+            report.moved, 0,
+            "no move should start once dir creation fails"
+        );
+    }
+
+    #[test]
+    fn mid_batch_rename_failure_does_not_stop_the_rest() {
+        let fs = FaultyFileSystem::new(
+            InMemoryFileSystem::new()
+                .with_file("/root/src/a.mkv")
+                .with_file("/root/src/b.mkv"),
+        )
+        .fail_rename_from("/root/src/a.mkv");
+        let plan = plan_with(
+            vec!["/root/dest"],
+            vec![
+                ("/root/src/a.mkv", "/root/dest/a.mkv"),
+                ("/root/src/b.mkv", "/root/dest/b.mkv"),
+            ],
+            vec!["/root/src"],
+        );
+        let report = execute(&plan, &fs, &CancelToken::new(), &mut Journal::disabled());
+        assert_eq!(report.moved, 1);
+        assert_eq!(report.failed.len(), 1);
+        assert!(fs.exists(Path::new("/root/dest/b.mkv")));
+        assert!(fs.exists(Path::new("/root/src/a.mkv")));
+    }
+
+    #[test]
+    fn cancellation_before_moves_starts_none_of_them() {
+        let fs = InMemoryFileSystem::new()
+            .with_file("/root/src/a.mkv")
+            .with_file("/root/src/b.mkv");
+        let plan = plan_with(
+            vec![],
+            vec![
+                ("/root/src/a.mkv", "/root/dest/a.mkv"),
+                ("/root/src/b.mkv", "/root/dest/b.mkv"),
+            ],
+            vec!["/root/src"],
+        );
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let report = execute(&plan, &fs, &cancel, &mut Journal::disabled());
+        assert!(report.cancelled);
+        assert_eq!(report.moved, 0);
+        assert_eq!(report.failed.len(), 0);
+        assert!(fs.exists(Path::new("/root/src/a.mkv")));
+        assert!(fs.exists(Path::new("/root/src/b.mkv")));
+    }
+
+    #[test]
+    fn never_removes_a_source_folder_that_still_has_a_skipped_file() {
+        let fs = InMemoryFileSystem::new()
+            .with_file("/root/src/a.mkv")
+            .with_file("/root/src/leftover.nfo");
+        let plan = plan_with(
+            vec!["/root/dest"],
+            vec![("/root/src/a.mkv", "/root/dest/a.mkv")],
+            vec!["/root/src"],
+        );
+        let report = execute(&plan, &fs, &CancelToken::new(), &mut Journal::disabled());
+        assert_eq!(report.moved, 1);
+        assert_eq!(report.removed_dirs, 0);
+        assert!(fs.exists(Path::new("/root/src/leftover.nfo")));
     }
 }

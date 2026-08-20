@@ -3,7 +3,7 @@
 use crate::exec::ExecReport;
 use crate::plan::Plan;
 
-pub fn print_plan(plan: &Plan, apply: bool) {
+pub fn print_plan(plan: &Plan, apply: bool, merged: usize) {
     if apply {
         println!("APPLY — writing changes into the library root");
     } else {
@@ -36,10 +36,11 @@ pub fn print_plan(plan: &Plan, apply: bool) {
     }
 
     println!(
-        "Summary: {} move(s), {} dir(s), {} skipped",
+        "Summary: {} move(s), {} dir(s), {} skipped, {} merged group(s)",
         plan.moves.len(),
         plan.dirs.len(),
-        plan.skips.len()
+        plan.skips.len(),
+        merged
     );
 }
 
@@ -54,5 +55,8 @@ pub fn print_exec(report: &ExecReport) {
     );
     for f in &report.failed {
         println!("  FAIL    {} ({})", f.path.display(), f.reason);
+    }
+    if report.cancelled {
+        println!("  CANCELLED — stopped early; nothing already moved was rolled back");
     }
 }
