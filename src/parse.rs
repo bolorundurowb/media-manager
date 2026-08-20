@@ -23,6 +23,9 @@ pub struct ParsedName {
     pub resolution: Option<String>,
     pub source: Option<String>,
     pub edition: Option<String>,
+    /// Last-resort, known non-title tag used only when resolution, edition,
+    /// and source are all absent.
+    pub fallback_tag: Option<String>,
     pub season: Option<u8>,
 }
 
@@ -208,7 +211,9 @@ fn year_re() -> &'static Regex {
 
 fn season_token_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)^s(\d{1,2})$").expect("season token regex"))
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)^s(\d{1,2})(?:e\d{1,3}(?:-e?\d{1,3})?)?$").expect("season token regex")
+    })
 }
 
 fn episode_re() -> &'static Regex {
@@ -347,6 +352,28 @@ fn is_codec_token(tok: &str) -> bool {
     CODEC_TOKENS.contains(&t.as_str()) || codec_group_re().is_match(&t)
 }
 
+fn fallback_version_tag(tok: &str) -> Option<String> {
+    let normalized = tok.trim().to_ascii_lowercase();
+    if is_hdr_token(tok) {
+        return Some(match normalized.as_str() {
+            "hdr10+" | "hdr10plus" => "HDR10+".into(),
+            "dolby" | "vision" | "dv" | "dovi" => "Dolby Vision".into(),
+            "sdr" => "SDR".into(),
+            "hlg" => "HLG".into(),
+            _ => normalized.to_ascii_uppercase(),
+        });
+    }
+    if is_codec_token(tok) {
+        return Some(match normalized.as_str() {
+            "h265" | "hevc" => "HEVC".into(),
+            "h264" | "avc" => "H264".into(),
+            "av1" => "AV1".into(),
+            _ => normalized,
+        });
+    }
+    None
+}
+
 fn parse_season_token(tok: &str) -> Option<u8> {
     let cap = season_token_re().captures(tok)?;
     cap.get(1)?.as_str().parse().ok()
@@ -357,6 +384,7 @@ fn apply_tag_blob(
     resolution: &mut Option<String>,
     source: &mut Option<String>,
     edition: &mut Option<String>,
+    fallback_tag: &mut Option<String>,
 ) {
     let unified = unify_separators(blob);
     let tag_tokens: Vec<&str> = unified.split_whitespace().collect();
@@ -377,6 +405,9 @@ fn apply_tag_blob(
                 *source = Some(s.to_string());
             }
         }
+        if fallback_tag.is_none() {
+            *fallback_tag = fallback_version_tag(tok);
+        }
     }
 }
 
@@ -386,8 +417,15 @@ pub fn parse_media_name(raw: &str, kind: LibraryKind) -> Result<ParsedName, Pars
     let mut resolution = None;
     let mut source = None;
     let mut edition = None;
+    let mut fallback_tag = None;
     for tag in &tags {
-        apply_tag_blob(tag, &mut resolution, &mut source, &mut edition);
+        apply_tag_blob(
+            tag,
+            &mut resolution,
+            &mut source,
+            &mut edition,
+            &mut fallback_tag,
+        );
     }
 
     let tokens: Vec<&str> = core.split_whitespace().collect();
@@ -485,6 +523,9 @@ pub fn parse_media_name(raw: &str, kind: LibraryKind) -> Result<ParsedName, Pars
                 || is_codec_token(tok)
                 || is_junk_token(tok))
         {
+            if fallback_tag.is_none() {
+                fallback_tag = fallback_version_tag(tok);
+            }
             in_tags = true;
             i += 1;
             continue;
@@ -537,6 +578,7 @@ pub fn parse_media_name(raw: &str, kind: LibraryKind) -> Result<ParsedName, Pars
         resolution,
         source,
         edition,
+        fallback_tag,
         season,
     })
 }
@@ -568,9 +610,9 @@ pub fn parse_episode(filename: &str) -> Option<ParsedEpisode> {
 
 pub fn strip_extension(name: &str) -> &str {
     match name.rfind('.') {
-        Some(i) if i > 0 && name.len() - i <= 6 && name.len() - i > 1 => {
-            let ext = &name[i + 1..];
-            if ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+        Some(i) if i > 0 => {
+            let ext = name[i + 1..].to_ascii_lowercase();
+            if VIDEO_EXTS.contains(&ext.as_str()) || SUB_EXTS.contains(&ext.as_str()) {
                 &name[..i]
             } else {
                 name
@@ -605,13 +647,14 @@ pub fn movie_folder_name(title: &str, year: Option<u16>) -> String {
     }
 }
 
-/// Version fallback: resolution → edition → source.
+/// Version fallback: resolution → edition → source → known non-title tag.
 pub fn version_label(parsed: &ParsedName) -> Option<String> {
     parsed
         .resolution
         .clone()
         .or_else(|| parsed.edition.clone())
         .or_else(|| parsed.source.clone())
+        .or_else(|| parsed.fallback_tag.clone())
 }
 
 pub fn show_folder_name(title: &str, year: Option<u16>) -> String {

@@ -78,6 +78,16 @@ mod movies {
     }
 
     #[test]
+    fn known_non_title_tag_is_last_resort_version() {
+        let p = parse_media_name("Movie (2020) HDR", LibraryKind::Movies).unwrap();
+        assert_eq!(p.fallback_tag.as_deref(), Some("HDR"));
+        assert_eq!(version_label(&p).as_deref(), Some("HDR"));
+
+        let with_source = parse_media_name("Movie (2020) WEB-DL HDR", LibraryKind::Movies).unwrap();
+        assert_eq!(version_label(&with_source).as_deref(), Some("WEB-DL"));
+    }
+
+    #[test]
     fn source_is_version_fallback_after_edition() {
         let p = parse_media_name("Movie (2001) BluRay", LibraryKind::Movies).unwrap();
         assert_eq!(version_label(&p).as_deref(), Some("BluRay"));
@@ -188,6 +198,14 @@ mod tv {
         assert_eq!(p.year, Some(2015));
         assert_eq!(p.season, Some(1));
         assert_eq!(p.resolution.as_deref(), Some("1080p"));
+    }
+
+    #[test]
+    fn dotted_sxx_after_year_is_season_not_an_extension() {
+        let p = parse_media_name("Ambiguous.2020.S01", LibraryKind::Tv).unwrap();
+        assert_eq!(p.title, "Ambiguous");
+        assert_eq!(p.year, Some(2020));
+        assert_eq!(p.season, Some(1));
     }
 
     #[test]

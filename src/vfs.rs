@@ -3,16 +3,16 @@
 //! wrapper in tests (dest collisions, mid-rename failures, inaccessible
 //! paths, etc.).
 
-use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// Everything `exec` needs from a filesystem: list children, check existence
 /// and kind, create a directory (and its ancestors), rename without ever
 /// clobbering an existing destination, and remove a directory that must
 /// already be empty.
-pub trait FileSystem {
+pub trait FileSystem: Send + Sync {
     fn read_dir(&self, dir: &Path) -> io::Result<Vec<PathBuf>>;
     fn exists(&self, path: &Path) -> bool;
     fn is_dir(&self, path: &Path) -> bool;
@@ -66,7 +66,7 @@ struct InMemoryState {
 /// directories.
 #[derive(Default)]
 pub struct InMemoryFileSystem {
-    state: RefCell<InMemoryState>,
+    state: Mutex<InMemoryState>,
 }
 
 impl InMemoryFileSystem {
@@ -84,7 +84,7 @@ impl InMemoryFileSystem {
         if let Some(parent) = path.parent() {
             self.ensure_dir_and_ancestors(parent);
         }
-        self.state.borrow_mut().files.insert(path);
+        self.state.lock().unwrap().files.insert(path);
         self
     }
 
@@ -95,7 +95,7 @@ impl InMemoryFileSystem {
             chain.push(p.to_path_buf());
             cur = p.parent();
         }
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap();
         for p in chain {
             state.dirs.insert(p);
         }
@@ -104,7 +104,7 @@ impl InMemoryFileSystem {
 
 impl FileSystem for InMemoryFileSystem {
     fn read_dir(&self, dir: &Path) -> io::Result<Vec<PathBuf>> {
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap();
         if !state.dirs.contains(dir) {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -124,12 +124,12 @@ impl FileSystem for InMemoryFileSystem {
     }
 
     fn exists(&self, path: &Path) -> bool {
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap();
         state.dirs.contains(path) || state.files.contains(path)
     }
 
     fn is_dir(&self, path: &Path) -> bool {
-        self.state.borrow().dirs.contains(path)
+        self.state.lock().unwrap().dirs.contains(path)
     }
 
     fn create_dir_all(&self, path: &Path) -> io::Result<()> {
@@ -139,7 +139,7 @@ impl FileSystem for InMemoryFileSystem {
 
     fn rename_no_replace(&self, from: &Path, to: &Path) -> io::Result<()> {
         {
-            let state = self.state.borrow();
+            let state = self.state.lock().unwrap();
             if state.dirs.contains(to) || state.files.contains(to) {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
@@ -150,7 +150,7 @@ impl FileSystem for InMemoryFileSystem {
         if let Some(parent) = to.parent() {
             self.ensure_dir_and_ancestors(parent);
         }
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap();
         if state.files.remove(from) {
             state.files.insert(to.to_path_buf());
             Ok(())
@@ -166,7 +166,7 @@ impl FileSystem for InMemoryFileSystem {
     }
 
     fn remove_empty_dir(&self, path: &Path) -> io::Result<()> {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap();
         if !state.dirs.contains(path) {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -291,8 +291,11 @@ mod tests {
     fn in_memory_rename_moves_file_and_updates_listing() {
         let fs = InMemoryFileSystem::new().with_file("/root/a/video.mkv");
         assert!(fs.exists(Path::new("/root/a/video.mkv")));
-        fs.rename_no_replace(Path::new("/root/a/video.mkv"), Path::new("/root/b/video.mkv"))
-            .unwrap();
+        fs.rename_no_replace(
+            Path::new("/root/a/video.mkv"),
+            Path::new("/root/b/video.mkv"),
+        )
+        .unwrap();
         assert!(!fs.exists(Path::new("/root/a/video.mkv")));
         assert!(fs.exists(Path::new("/root/b/video.mkv")));
         let listing = fs.read_dir(Path::new("/root/b")).unwrap();

@@ -1,6 +1,7 @@
 //! Human-readable plan / result reporting.
 
 use crate::exec::ExecReport;
+use crate::multi::LogEvent;
 use crate::plan::Plan;
 
 pub fn print_plan(plan: &Plan, apply: bool, merged: usize) {
@@ -58,5 +59,33 @@ pub fn print_exec(report: &ExecReport) {
     }
     if report.cancelled {
         println!("  CANCELLED — stopped early; nothing already moved was rolled back");
+    }
+}
+
+pub fn print_event(event: &LogEvent) {
+    match event {
+        LogEvent::Scanning => println!("SCANNING"),
+        LogEvent::JobStarted(path) => println!("JOB     {} (started)", path.display()),
+        LogEvent::JobFinished(path) => println!("JOB     {} (finished)", path.display()),
+        LogEvent::CreateDir(path) => println!("CREATE  {}", path.display()),
+        LogEvent::PlannedMove { from, to } | LogEvent::Moved { from, to } => {
+            println!("MOVE    {} -> {}", from.display(), to.display());
+        }
+        LogEvent::Skipped { path, reason } => {
+            println!("SKIP    {} ({reason})", path.display());
+        }
+        LogEvent::Failed { path, reason } => {
+            println!("FAIL    {} ({reason})", path.display());
+        }
+        LogEvent::Finished {
+            moved,
+            merged,
+            skipped,
+            failed,
+            cancelled,
+        } => println!(
+            "Summary: {moved} moved, {merged} merged, {skipped} skipped, \
+             {failed} failed, cancelled={cancelled}"
+        ),
     }
 }

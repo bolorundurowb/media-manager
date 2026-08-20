@@ -10,7 +10,8 @@ mod report;
 pub mod scan;
 mod vfs;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::mpsc;
 
 pub use cancel::CancelToken;
 pub use multi::{run_items, LogEvent, WorkItem};
@@ -66,51 +67,48 @@ pub struct Summary {
 }
 
 pub fn run(opts: Options) -> Result<Summary, Error> {
-    let root = absolute(&opts.root)?;
-    let meta = std::fs::metadata(&root)?;
-    if !meta.is_dir() {
-        return Err(Error::NotADirectory(root));
+    let root = if opts.root.is_absolute() {
+        opts.root.clone()
+    } else {
+        std::env::current_dir()?.join(&opts.root)
+    };
+    match std::fs::metadata(&root) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Err(Error::NotADirectory(root)),
+        Err(err) => return Err(Error::Io(err)),
     }
 
     tracing::info!(root = %root.display(), kind = ?opts.kind, apply = opts.apply, "scanning");
-
-    let folders = scan::scan_root(&root)?;
-    tracing::info!(count = folders.len(), "media folders");
-
-    let (outcome, prior_skips) = group::group_folders(opts.kind, folders);
-    let merged = count_merged(&outcome);
-    let plan = plan::build_plan(&root, outcome, prior_skips);
-
-    report::print_plan(&plan, opts.apply, merged);
-
-    let mut summary = Summary {
-        planned_moves: plan.moves.len(),
-        merged,
-        skipped: plan.skips.len(),
-        ..Summary::default()
-    };
-
-    if opts.apply {
-        let mut journal = journal::Journal::open(&root);
-        tracing::info!(path = %journal.path().display(), "apply journal");
-        journal.record(&format!(
-            "RUN START root={} kind={:?} moves={}",
-            root.display(),
-            opts.kind,
-            plan.moves.len()
-        ));
-        let exec = exec::execute(&plan, &vfs::RealFileSystem, &opts.cancel, &mut journal);
-        journal.record(&format!(
-            "RUN END moved={} failed={} cancelled={}",
-            exec.moved,
-            exec.failed.len(),
-            exec.cancelled
-        ));
-        report::print_exec(&exec);
-        summary.moved = exec.moved;
-        summary.failed = exec.failed.len();
-        summary.cancelled = exec.cancelled;
+    let mut items = Vec::new();
+    for entry in std::fs::read_dir(&root)? {
+        match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                let include = entry
+                    .file_type()
+                    .map(|t| t.is_dir() || (t.is_file() && parse::is_video_path(&path)))
+                    .unwrap_or(false);
+                if include {
+                    items.push(WorkItem {
+                        path,
+                        kind: opts.kind,
+                    });
+                }
+            }
+            Err(err) => tracing::warn!(error = %err, "skipping unreadable root entry"),
+        }
     }
+    items.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let (tx, rx) = mpsc::channel();
+    let printer = std::thread::spawn(move || {
+        for event in rx {
+            report::print_event(&event);
+        }
+    });
+    let result = multi::run_items(&root, None, items, opts.apply, &opts.cancel, tx);
+    let _ = printer.join();
+    let summary = result?;
 
     tracing::info!(
         processed = summary.moved,
@@ -124,33 +122,11 @@ pub fn run(opts: Options) -> Result<Summary, Error> {
     Ok(summary)
 }
 
-/// Number of groups assembled from more than one source folder (movie
-/// versions merged under one title/year, or TV seasons merged under one
-/// show).
-fn count_merged(outcome: &group::GroupOutcome) -> usize {
-    match outcome {
-        group::GroupOutcome::Movies(groups) => {
-            groups.iter().filter(|g| g.folders.len() > 1).count()
-        }
-        group::GroupOutcome::Tv(groups) => groups
-            .iter()
-            .filter(|g| g.seasons.values().map(|v| v.len()).sum::<usize>() > 1)
-            .count(),
-    }
-}
-
-fn absolute(path: &Path) -> Result<PathBuf, Error> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        Ok(std::env::current_dir()?.join(path))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -376,6 +352,40 @@ mod tests {
     }
 
     #[test]
+    fn rarbg_stem_folder_subs_are_associated_by_language() {
+        let root = temp_lib();
+        let pack = "The.Sopranos.S06.1080p.BluRay.x265-RARBG";
+        let e14 = "The.Sopranos.S06E14.1080p.BluRay.x265-RARBG";
+        let e15 = "The.Sopranos.S06E15.1080p.BluRay.x265-RARBG";
+        touch(&root.join(format!("{pack}/{e14}.mkv")));
+        touch(&root.join(format!("{pack}/{e15}.mkv")));
+        touch(&root.join(format!("{pack}/subs/{e14}/3_English.srt")));
+        touch(&root.join(format!("{pack}/subs/{e15}/3_English.srt")));
+        touch(&root.join(format!("{pack}/subs/{e15}/4_English.srt")));
+        // Same numbered name, but the folder is not this video's stem.
+        touch(&root.join(format!("{pack}/subs/other-release/2_English.srt")));
+
+        run(Options {
+            root: root.clone(),
+            kind: LibraryKind::Tv,
+            apply: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let season = root.join("The Sopranos/Season 06");
+        assert!(season.join("The Sopranos S06E14.mkv").is_file());
+        assert!(season.join("The Sopranos S06E15.mkv").is_file());
+        assert!(season.join("subs/The Sopranos S06E14.en.srt").is_file());
+        assert!(season.join("subs/The Sopranos S06E15.en.srt").is_file());
+        assert!(season.join("subs/The Sopranos S06E15.en.4.srt").is_file());
+        assert!(root
+            .join(format!("{pack}/subs/other-release/2_English.srt"))
+            .is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn extras_move_when_folder_is_fully_processed() {
         let root = temp_lib();
         touch(&root.join("Onward.2020.2160p/Onward.2020.2160p.mkv"));
@@ -474,12 +484,8 @@ mod tests {
         })
         .unwrap();
 
-        assert!(root
-            .join("Movie (2020)/Movie (2020) - 1080p.mkv")
-            .is_file());
-        assert!(root
-            .join("Movie (2020)/Movie (2020) - 2160p.mkv")
-            .is_file());
+        assert!(root.join("Movie (2020)/Movie (2020) - 1080p.mkv").is_file());
+        assert!(root.join("Movie (2020)/Movie (2020) - 2160p.mkv").is_file());
         assert!(summary.skipped >= 1);
         // Exactly one extra should have moved; the case-colliding extra
         // stays in its source folder.
@@ -508,9 +514,7 @@ mod tests {
 
         assert_eq!(summary.moved, 1);
         assert!(summary.skipped >= 1);
-        assert!(root
-            .join("Movie (2020)/Movie (2020) - 1080p.mkv")
-            .is_file());
+        assert!(root.join("Movie (2020)/Movie (2020) - 1080p.mkv").is_file());
         // Exactly one of the two same-labelled videos moved; the other was
         // left in place rather than overwritten or renamed with a made-up
         // label.

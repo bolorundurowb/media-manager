@@ -8,10 +8,11 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Journal {
-    file: Option<File>,
+    file: Mutex<Option<File>>,
     path: PathBuf,
 }
 
@@ -32,14 +33,17 @@ impl Journal {
                 None
             }
         };
-        Journal { file, path }
+        Journal {
+            file: Mutex::new(file),
+            path,
+        }
     }
 
     /// A journal that never writes anywhere; used for pure in-memory tests.
     #[cfg(test)]
     pub fn disabled() -> Journal {
         Journal {
-            file: None,
+            file: Mutex::new(None),
             path: PathBuf::new(),
         }
     }
@@ -48,8 +52,15 @@ impl Journal {
         &self.path
     }
 
-    pub fn record(&mut self, line: &str) {
-        let Some(file) = self.file.as_mut() else {
+    pub fn record(&self, line: &str) {
+        let mut guard = match self.file.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                tracing::warn!("journal lock poisoned; continuing without a journal");
+                return;
+            }
+        };
+        let Some(file) = guard.as_mut() else {
             return;
         };
         let ts = SystemTime::now()
@@ -85,7 +96,7 @@ mod tests {
     #[test]
     fn writes_lines_to_disk() {
         let root = temp_dir();
-        let mut journal = Journal::open(&root);
+        let journal = Journal::open(&root);
         journal.record("RUN START");
         journal.record("RUN END");
         let contents = fs::read_to_string(journal.path()).unwrap();
@@ -96,7 +107,7 @@ mod tests {
 
     #[test]
     fn disabled_journal_is_a_no_op() {
-        let mut journal = Journal::disabled();
+        let journal = Journal::disabled();
         journal.record("should not panic or write anywhere");
         assert_eq!(journal.path(), Path::new(""));
     }

@@ -8,9 +8,7 @@ use crate::parse::{
     episode_file_stem, extension_lower, movie_folder_name, parse_episode, season_folder_name,
     show_folder_name, version_label,
 };
-use crate::scan::{
-    associated_subtitles, extra_files, is_subs_dir_name, list_subtitle_files, subtitle_suffix,
-};
+use crate::scan::{associated_subtitles, extra_files, is_subs_dir_name, list_subtitle_files};
 
 #[derive(Debug, Clone)]
 pub struct MoveOp {
@@ -74,7 +72,9 @@ fn plan_movie_group(root: &Path, group: MovieGroup, plan: &mut Plan) {
     let mut claimed: HashSet<String> = HashSet::new();
 
     for folder in &group.folders {
-        plan.source_folders.push(folder.folder.path.clone());
+        if !folder.folder.loose {
+            plan.source_folders.push(folder.folder.path.clone());
+        }
         let folder_version = version_label(&folder.parsed);
         // When a folder holds several videos, each must carry its own distinct
         // label from its filename; the folder-level label is only a fallback
@@ -117,9 +117,11 @@ fn plan_movie_group(root: &Path, group: MovieGroup, plan: &mut Plan) {
             plan_video_and_subs(plan, video, &dest, &mut claimed);
             videos_ok += 1;
         }
-        let sources = plan_move_sources(plan);
-        log_unassociated_subs(&folder.folder.path, &folder.folder.videos, &sources, plan);
-        if videos_ok == folder.folder.videos.len() && videos_ok > 0 {
+        if !folder.folder.loose {
+            let sources = plan_move_sources(plan);
+            log_unassociated_subs(&folder.folder.path, &folder.folder.videos, &sources, plan);
+        }
+        if !folder.folder.loose && videos_ok == folder.folder.videos.len() && videos_ok > 0 {
             plan_extras(
                 &folder.folder.path,
                 &folder.folder.videos,
@@ -143,7 +145,9 @@ fn plan_tv_group(root: &Path, group: TvShowGroup, plan: &mut Plan) {
         plan.dirs.push(season_dir.clone());
 
         for folder in folders {
-            plan.source_folders.push(folder.folder.path.clone());
+            if !folder.folder.loose {
+                plan.source_folders.push(folder.folder.path.clone());
+            }
             let mut videos_ok = 0usize;
             for video in &folder.folder.videos {
                 let Some(name) = video.file_name().and_then(|n| n.to_str()) else {
@@ -181,9 +185,11 @@ fn plan_tv_group(root: &Path, group: TvShowGroup, plan: &mut Plan) {
                 plan_video_and_subs(plan, video, &dest, &mut claimed);
                 videos_ok += 1;
             }
-            let sources = plan_move_sources(plan);
-            log_unassociated_subs(&folder.folder.path, &folder.folder.videos, &sources, plan);
-            if videos_ok == folder.folder.videos.len() && videos_ok > 0 {
+            if !folder.folder.loose {
+                let sources = plan_move_sources(plan);
+                log_unassociated_subs(&folder.folder.path, &folder.folder.videos, &sources, plan);
+            }
+            if !folder.folder.loose && videos_ok == folder.folder.videos.len() && videos_ok > 0 {
                 plan_extras(
                     &folder.folder.path,
                     &folder.folder.videos,
@@ -194,6 +200,10 @@ fn plan_tv_group(root: &Path, group: TvShowGroup, plan: &mut Plan) {
             }
         }
     }
+}
+
+fn dest_is_free(claimed: &HashSet<String>, from: &Path, dest: &Path) -> bool {
+    from != dest && !dest.exists() && !claimed.contains(&dest_key(dest))
 }
 
 fn claim_dest(plan: &mut Plan, claimed: &mut HashSet<String>, from: &Path, dest: &Path) -> bool {
@@ -250,20 +260,12 @@ pub(crate) fn path_too_long(path: &Path) -> bool {
         .any(|c| c.as_os_str().len() > MAX_COMPONENT_LEN)
 }
 
-fn plan_video_and_subs(
-    plan: &mut Plan,
-    video: &Path,
-    dest: &Path,
-    claimed: &mut HashSet<String>,
-) {
+fn plan_video_and_subs(plan: &mut Plan, video: &Path, dest: &Path, claimed: &mut HashSet<String>) {
     plan.moves.push(MoveOp {
         from: video.to_path_buf(),
         to: dest.to_path_buf(),
     });
 
-    let Some(video_stem) = video.file_stem().and_then(|s| s.to_str()) else {
-        return;
-    };
     let Some(dest_stem) = dest.file_stem().and_then(|s| s.to_str()) else {
         return;
     };
@@ -272,12 +274,6 @@ fn plan_video_and_subs(
     };
 
     for sub in associated_subtitles(video) {
-        let Some(sub_name) = sub.path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        let Some(suffix) = subtitle_suffix(sub_name, video_stem) else {
-            continue;
-        };
         let Some(ext) = extension_lower(&sub.path) else {
             continue;
         };
@@ -290,7 +286,14 @@ fn plan_video_and_subs(
         } else {
             dest_parent.to_path_buf()
         };
-        let sub_dest = dest_dir.join(format!("{dest_stem}{suffix}.{ext}"));
+        let primary = dest_dir.join(format!("{dest_stem}{}.{ext}", sub.suffix));
+        let sub_dest = if dest_is_free(claimed, &sub.path, &primary) {
+            primary
+        } else if let Some(n) = sub.track {
+            dest_dir.join(format!("{dest_stem}{}.{n}.{ext}", sub.suffix))
+        } else {
+            primary
+        };
         if !claim_dest(plan, claimed, &sub.path, &sub_dest) {
             continue;
         }
@@ -393,7 +396,7 @@ fn validate_plan(root: &Path, plan: &mut Plan) {
             drop_moves.push((i, format!("source missing: {}", mv.from.display())));
             continue;
         }
-        if !is_under(root, &mv.to) {
+        if has_parent_component(&mv.to) || !is_under(root, &mv.to) {
             drop_moves.push((
                 i,
                 format!("destination escapes library root: {}", mv.to.display()),
@@ -424,6 +427,11 @@ fn validate_plan(root: &Path, plan: &mut Plan) {
 /// True when `path` is `root` or a descendant of `root`.
 fn is_under(root: &Path, path: &Path) -> bool {
     path.starts_with(root)
+}
+
+fn has_parent_component(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
 }
 
 /// True when the destination is the source or is nested under it (for
@@ -476,5 +484,13 @@ mod tests {
             Path::new("/lib/a/video.mkv"),
             Path::new("/lib/b/video.mkv")
         ));
+    }
+
+    #[test]
+    fn parent_components_are_rejected_before_filesystem_resolution() {
+        assert!(has_parent_component(Path::new(
+            "/library/title/../escape.mkv"
+        )));
+        assert!(!has_parent_component(Path::new("/library/title/movie.mkv")));
     }
 }

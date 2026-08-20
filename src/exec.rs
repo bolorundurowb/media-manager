@@ -26,11 +26,35 @@ pub struct ExecReport {
     pub cancelled: bool,
 }
 
+#[derive(Debug, Clone)]
+pub enum ExecEvent {
+    CreatedDir(std::path::PathBuf),
+    Moved {
+        from: std::path::PathBuf,
+        to: std::path::PathBuf,
+    },
+    Failed {
+        path: std::path::PathBuf,
+        reason: String,
+    },
+}
+
+#[cfg(test)]
 pub fn execute(
     plan: &Plan,
     fs: &dyn FileSystem,
     cancel: &CancelToken,
     journal: &mut Journal,
+) -> ExecReport {
+    execute_with_events(plan, fs, cancel, journal, &|_| {})
+}
+
+pub(crate) fn execute_with_events(
+    plan: &Plan,
+    fs: &dyn FileSystem,
+    cancel: &CancelToken,
+    journal: &Journal,
+    emit: &dyn Fn(ExecEvent),
 ) -> ExecReport {
     let mut report = ExecReport::default();
 
@@ -49,15 +73,21 @@ pub fn execute(
                 tracing::debug!(path = %dir.display(), "create dir");
                 journal.record(&format!("CREATE_DIR OK {}", dir.display()));
                 report.created_dirs += 1;
+                emit(ExecEvent::CreatedDir(dir.clone()));
             }
             Err(err) => {
                 tracing::error!(path = %dir.display(), error = %err, "failed to create directory");
                 journal.record(&format!("CREATE_DIR FAIL {} ({err})", dir.display()));
                 failed_dirs.insert(dir.clone());
-                report.failed.push(Skip {
+                let failed = Skip {
                     path: dir.clone(),
                     reason: format!("create dir failed: {err}"),
+                };
+                emit(ExecEvent::Failed {
+                    path: failed.path.clone(),
+                    reason: failed.reason.clone(),
                 });
+                report.failed.push(failed);
             }
         }
     }
@@ -82,13 +112,15 @@ pub fn execute(
                 mv.from.display(),
                 mv.to.display()
             ));
-            report.failed.push(Skip {
+            let failed = Skip {
                 path: mv.from.clone(),
-                reason: format!(
-                    "destination directory was not created: {}",
-                    mv.to.display()
-                ),
+                reason: format!("destination directory was not created: {}", mv.to.display()),
+            };
+            emit(ExecEvent::Failed {
+                path: failed.path.clone(),
+                reason: failed.reason.clone(),
             });
+            report.failed.push(failed);
             moves_started += 1;
             continue;
         }
@@ -106,6 +138,10 @@ pub fn execute(
                     mv.to.display()
                 ));
                 report.moved += 1;
+                emit(ExecEvent::Moved {
+                    from: mv.from.clone(),
+                    to: mv.to.clone(),
+                });
             }
             Err(err) => {
                 tracing::error!(
@@ -119,10 +155,15 @@ pub fn execute(
                     mv.from.display(),
                     mv.to.display()
                 ));
-                report.failed.push(Skip {
+                let failed = Skip {
                     path: mv.from.clone(),
                     reason: format!("move failed: {err}"),
+                };
+                emit(ExecEvent::Failed {
+                    path: failed.path.clone(),
+                    reason: failed.reason.clone(),
                 });
+                report.failed.push(failed);
             }
         }
         moves_started += 1;

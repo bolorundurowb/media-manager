@@ -31,6 +31,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 eframe = { version = "0.28", optional = true }
 egui = { version = "0.28", optional = true }
 rfd = { version = "0.14", optional = true }
+rayon = "1.12.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

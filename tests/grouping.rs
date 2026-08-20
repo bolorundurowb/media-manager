@@ -10,6 +10,7 @@ fn folder(name: &str) -> MediaFolder {
     MediaFolder {
         path: PathBuf::from(name),
         videos: Vec::new(),
+        loose: false,
     }
 }
 

@@ -39,6 +39,17 @@ pub fn group_folders(
     kind: LibraryKind,
     folders: Vec<MediaFolder>,
 ) -> (GroupOutcome, Vec<SkippedFolder>) {
+    let (parsed, mut skipped) = parse_folders(kind, folders);
+    let outcome = group_parsed(kind, parsed, &mut skipped);
+    (outcome, skipped)
+}
+
+/// Parse a batch independently. Phase 6 runs this per root child in the
+/// bounded worker pool, then joins all parsed folders before global grouping.
+pub(crate) fn parse_folders(
+    kind: LibraryKind,
+    folders: Vec<MediaFolder>,
+) -> (Vec<ParsedFolder>, Vec<SkippedFolder>) {
     let mut skipped = Vec::new();
     let mut parsed = Vec::new();
 
@@ -69,14 +80,24 @@ pub fn group_folders(
         }
     }
 
+    (parsed, skipped)
+}
+
+/// Group already-parsed folders globally so versions/seasons discovered by
+/// different workers still merge and validate as one destination identity.
+pub(crate) fn group_parsed(
+    kind: LibraryKind,
+    parsed: Vec<ParsedFolder>,
+    skipped: &mut Vec<SkippedFolder>,
+) -> GroupOutcome {
     match kind {
         LibraryKind::Movies => {
             let groups = group_movies(parsed);
-            (GroupOutcome::Movies(groups), skipped)
+            GroupOutcome::Movies(groups)
         }
         LibraryKind::Tv => {
-            let groups = group_tv(parsed, &mut skipped);
-            (GroupOutcome::Tv(groups), skipped)
+            let groups = group_tv(parsed, skipped);
+            GroupOutcome::Tv(groups)
         }
     }
 }

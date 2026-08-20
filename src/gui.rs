@@ -38,8 +38,10 @@ impl Assignment {
 enum Status {
     Idle,
     Scanning,
+    Planning,
     Applying,
     Done,
+    Cancelled,
     Failed,
 }
 
@@ -48,8 +50,10 @@ impl Status {
         match self {
             Status::Idle => "Idle",
             Status::Scanning => "Scanning",
+            Status::Planning => "Planning",
             Status::Applying => "Applying",
             Status::Done => "Done",
+            Status::Cancelled => "Cancelled",
             Status::Failed => "Failed",
         }
     }
@@ -145,14 +149,56 @@ impl GuiApp {
 
     fn can_start(&self) -> bool {
         self.run.is_none()
-            && !self.source.trim().is_empty()
+            && self.input_error().is_none()
             && self
                 .assignments
                 .values()
                 .any(|a| *a != Assignment::Unassigned)
     }
 
+    fn input_error(&self) -> Option<String> {
+        let root = PathBuf::from(self.source.trim());
+        if !root.is_dir() {
+            return Some(format!("not a directory: {}", root.display()));
+        }
+        let text = self.dest.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let dest = PathBuf::from(text);
+        if dest.exists() && !dest.is_dir() {
+            return Some(format!(
+                "destination is not a directory: {}",
+                dest.display()
+            ));
+        }
+        if !dest.exists() {
+            let mut ancestor = dest.parent();
+            while let Some(path) = ancestor {
+                if path.exists() {
+                    if !path.is_dir() {
+                        return Some(format!(
+                            "destination parent is not a directory: {}",
+                            path.display()
+                        ));
+                    }
+                    return None;
+                }
+                ancestor = path.parent();
+            }
+            return Some(format!(
+                "destination has no existing parent: {}",
+                dest.display()
+            ));
+        }
+        None
+    }
+
     fn start(&mut self) {
+        if let Some(err) = self.input_error() {
+            self.error = Some(err);
+            return;
+        }
         let root = PathBuf::from(self.source.trim());
         let dest_text = self.dest.trim();
         let dest = if dest_text.is_empty() {
@@ -222,7 +268,9 @@ impl GuiApp {
                             } => {
                                 self.last_summary =
                                     Some((*moved, *merged, *skipped, *failed, *cancelled));
-                                self.status = if *cancelled || *failed > 0 {
+                                self.status = if *cancelled {
+                                    Status::Cancelled
+                                } else if *failed > 0 {
                                     Status::Failed
                                 } else {
                                     Status::Done
@@ -231,6 +279,11 @@ impl GuiApp {
                             }
                             LogEvent::Scanning => {
                                 self.status = Status::Scanning;
+                            }
+                            LogEvent::CreateDir(_) | LogEvent::PlannedMove { .. }
+                                if !self.apply =>
+                            {
+                                self.status = Status::Planning;
                             }
                             _ => {
                                 self.status = Status::Applying;
@@ -259,7 +312,12 @@ impl GuiApp {
 fn format_event(event: &LogEvent) -> String {
     match event {
         LogEvent::Scanning => "SCANNING".to_string(),
+        LogEvent::JobStarted(path) => format!("JOB     {} (started)", path.display()),
+        LogEvent::JobFinished(path) => format!("JOB     {} (finished)", path.display()),
         LogEvent::CreateDir(path) => format!("CREATE  {}", path.display()),
+        LogEvent::PlannedMove { from, to } => {
+            format!("MOVE    {} -> {}", from.display(), to.display())
+        }
         LogEvent::Moved { from, to } => format!("MOVE    {} -> {}", from.display(), to.display()),
         LogEvent::Skipped { path, reason } => format!("SKIP    {} ({reason})", path.display()),
         LogEvent::Failed { path, reason } => format!("FAIL    {} ({reason})", path.display()),
@@ -270,7 +328,8 @@ fn format_event(event: &LogEvent) -> String {
             failed,
             cancelled,
         } => format!(
-            "SUMMARY moved={moved} merged={merged} skipped={skipped} failed={failed} cancelled={cancelled}"
+            "Summary: {moved} moved, {merged} merged, {skipped} skipped, \
+             {failed} failed, cancelled={cancelled}"
         ),
     }
 }
@@ -283,23 +342,31 @@ impl eframe::App for GuiApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            let running = self.run.is_some();
             ui.heading("media-manager");
 
             ui.horizontal(|ui| {
                 ui.label("Source:");
-                let response = ui.text_edit_singleline(&mut self.source);
-                if response.lost_focus() {
+                let response =
+                    ui.add_enabled(!running, egui::TextEdit::singleline(&mut self.source));
+                if !running && response.lost_focus() {
                     self.refresh_children();
                 }
-                if ui.button("Browse…").clicked() {
+                if ui
+                    .add_enabled(!running, egui::Button::new("Browse…"))
+                    .clicked()
+                {
                     self.browse_source();
                 }
             });
 
             ui.horizontal(|ui| {
                 ui.label("Dest (optional):");
-                ui.text_edit_singleline(&mut self.dest);
-                if ui.button("Browse…").clicked() {
+                ui.add_enabled(!running, egui::TextEdit::singleline(&mut self.dest));
+                if ui
+                    .add_enabled(!running, egui::Button::new("Browse…"))
+                    .clicked()
+                {
                     self.browse_dest();
                 }
             });
@@ -314,7 +381,7 @@ impl eframe::App for GuiApp {
             let children = self.children.clone();
             egui::ScrollArea::vertical()
                 .max_height(220.0)
-                .id_salt("children")
+                .id_source("children")
                 .show(ui, |ui| {
                     for child in &children {
                         let assignment = *self
@@ -327,7 +394,13 @@ impl eframe::App for GuiApp {
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_else(|| child.display().to_string());
                         let text = format!("{name}  [{}]", assignment.label());
-                        if ui.selectable_label(is_selected, text).clicked() {
+                        if ui
+                            .add_enabled(
+                                !running,
+                                egui::SelectableLabel::new(is_selected, text),
+                            )
+                            .clicked()
+                        {
                             if is_selected {
                                 self.selected.retain(|p| p != child);
                             } else {
@@ -338,7 +411,7 @@ impl eframe::App for GuiApp {
                 });
 
             ui.horizontal(|ui| {
-                let has_selection = !self.selected.is_empty();
+                let has_selection = !self.selected.is_empty() && !running;
                 if ui
                     .add_enabled(has_selection, egui::Button::new("Mark as Movies"))
                     .clicked()
@@ -360,13 +433,14 @@ impl eframe::App for GuiApp {
             });
 
             ui.separator();
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut self.apply, false, "Dry-run");
-                ui.radio_value(&mut self.apply, true, "Apply");
+            ui.add_enabled_ui(!running, |ui| {
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.apply, false, "Dry-run");
+                    ui.radio_value(&mut self.apply, true, "Apply");
+                });
             });
 
             ui.horizontal(|ui| {
-                let running = self.run.is_some();
                 if ui
                     .add_enabled(self.can_start() && !running, egui::Button::new("Start"))
                     .clicked()
@@ -389,7 +463,7 @@ impl eframe::App for GuiApp {
             ui.label("Log:");
             egui::ScrollArea::vertical()
                 .max_height(240.0)
-                .id_salt("log")
+                .id_source("log")
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     for line in &self.log {
