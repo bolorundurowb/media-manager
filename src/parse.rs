@@ -81,10 +81,10 @@ const SOURCES: &[(&str, &str)] = &[
     ("remux", "Remux"),
     ("hdtv", "HDTV"),
     ("dvdrip", "DVD"),
-    ("dvd", "DVD"),
 ];
 
-/// (token, canonical) — edition labels.
+/// Single-token editions. Multi-word forms live in `EDITION_PHRASES` so that
+/// e.g. "cut" is never stolen out of a title by itself.
 const EDITIONS: &[(&str, &str)] = &[
     ("extended", "Extended"),
     ("unrated", "Unrated"),
@@ -94,11 +94,23 @@ const EDITIONS: &[(&str, &str)] = &[
     ("imax", "IMAX"),
     ("remastered", "Remastered"),
     ("criterion", "Criterion"),
-    ("collectors", "Collector's Edition"),
-    ("ultimate", "Ultimate Edition"),
     ("alternate", "Alternate"),
-    ("special", "Special Edition"),
-    ("cut", "Cut"),
+];
+
+/// Multi-token edition phrases, matched before single tokens.
+const EDITION_PHRASES: &[(&[&str], &str)] = &[
+    (&["directors", "cut"], "Director's Cut"),
+    (&["director", "cut"], "Director's Cut"),
+    (&["extended", "cut"], "Extended"),
+    (&["theatrical", "cut"], "Theatrical"),
+    (&["special", "edition"], "Special Edition"),
+    (&["collectors", "edition"], "Collector's Edition"),
+    (&["ultimate", "edition"], "Ultimate Edition"),
+];
+
+/// Release-group / tag noise that is never part of a title.
+const JUNK_TOKENS: &[&str] = &[
+    "proper", "repack", "internal", "readnfo", "multi", "dubbed", "subbed", "limited",
 ];
 
 /// HDR / dynamic-range tokens (consumed, not stored).
@@ -287,9 +299,37 @@ fn source_token(tok: &str) -> Option<&'static str> {
     SOURCES.iter().find(|(k, _)| *k == t).map(|(_, v)| *v)
 }
 
+/// Lowercase and strip apostrophes so `Director's` matches `directors`.
+fn norm_match_token(tok: &str) -> String {
+    tok.trim()
+        .chars()
+        .filter(|c| *c != '\'' && *c != '\u{2019}' && *c != '\u{02bc}')
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
 fn edition_token(tok: &str) -> Option<&'static str> {
-    let t = tok.trim().to_ascii_lowercase();
+    let t = norm_match_token(tok);
     EDITIONS.iter().find(|(k, _)| *k == t).map(|(_, v)| *v)
+}
+
+fn match_edition_phrase(tokens: &[&str]) -> Option<(usize, String)> {
+    let norms: Vec<String> = tokens.iter().take(3).map(|t| norm_match_token(t)).collect();
+    for (phrase, label) in EDITION_PHRASES {
+        if norms.len() >= phrase.len()
+            && phrase.iter().enumerate().all(|(i, want)| norms[i] == *want)
+        {
+            return Some((phrase.len(), (*label).to_string()));
+        }
+    }
+    tokens
+        .first()
+        .and_then(|t| edition_token(t))
+        .map(|e| (1, e.to_string()))
+}
+
+fn is_junk_token(tok: &str) -> bool {
+    JUNK_TOKENS.contains(&norm_match_token(tok).as_str())
 }
 
 fn is_hdr_token(tok: &str) -> bool {
@@ -318,7 +358,13 @@ fn apply_tag_blob(
     edition: &mut Option<String>,
 ) {
     let unified = unify_separators(blob);
-    for tok in unified.split_whitespace() {
+    let tag_tokens: Vec<&str> = unified.split_whitespace().collect();
+    if edition.is_none() {
+        if let Some((_, label)) = match_edition_phrase(&tag_tokens) {
+            *edition = Some(label);
+        }
+    }
+    for tok in &tag_tokens {
         if resolution.is_none() {
             if let Some(r) = normalize_resolution(tok) {
                 *resolution = Some(r);
@@ -328,12 +374,6 @@ fn apply_tag_blob(
         if source.is_none() {
             if let Some(s) = source_token(tok) {
                 *source = Some(s.to_string());
-                continue;
-            }
-        }
-        if edition.is_none() {
-            if let Some(e) = edition_token(tok) {
-                *edition = Some(e.to_string());
             }
         }
     }
@@ -397,6 +437,14 @@ pub fn parse_media_name(raw: &str, kind: LibraryKind) -> Result<ParsedName, Pars
             }
         }
 
+        if tok == "-" || tok == "--" || tok == "—" {
+            if !title_parts.is_empty() {
+                in_tags = true;
+            }
+            i += 1;
+            continue;
+        }
+
         if let Some(r) = normalize_resolution(tok) {
             if resolution.is_none() {
                 resolution = Some(r);
@@ -406,25 +454,36 @@ pub fn parse_media_name(raw: &str, kind: LibraryKind) -> Result<ParsedName, Pars
             continue;
         }
 
-        if let Some(s) = source_token(tok) {
-            if source.is_none() {
-                source = Some(s.to_string());
+        let after_title = !title_parts.is_empty() || in_tags;
+
+        if after_title {
+            if let Some((n, label)) = match_edition_phrase(&tokens[i..]) {
+                if edition.is_none() {
+                    edition = Some(label);
+                }
+                in_tags = true;
+                i += n;
+                continue;
             }
-            in_tags = true;
-            i += 1;
-            continue;
         }
 
-        if let Some(e) = edition_token(tok) {
-            if edition.is_none() {
-                edition = Some(e.to_string());
+        if after_title {
+            if let Some(s) = source_token(tok) {
+                if source.is_none() {
+                    source = Some(s.to_string());
+                }
+                in_tags = true;
+                i += 1;
+                continue;
             }
-            in_tags = true;
-            i += 1;
-            continue;
         }
 
-        if is_hdr_token(tok) || is_audio_token(tok) || is_codec_token(tok) {
+        if after_title
+            && (is_hdr_token(tok)
+                || is_audio_token(tok)
+                || is_codec_token(tok)
+                || is_junk_token(tok))
+        {
             in_tags = true;
             i += 1;
             continue;

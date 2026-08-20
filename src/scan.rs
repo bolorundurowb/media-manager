@@ -164,20 +164,60 @@ fn collect_videos(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) -> io::Result<(
     Ok(())
 }
 
-/// Subtitle files in the same directory as `video` that share its stem.
-pub fn adjacent_subtitles(video: &Path) -> Vec<PathBuf> {
+/// A subtitle associated with a video, and whether it came from a
+/// `subs`/`subtitles` tree (one extra nested level is allowed).
+#[derive(Debug, Clone)]
+pub struct AssociatedSub {
+    pub path: PathBuf,
+    pub nested: bool,
+}
+
+/// Subtitle files associated with `video`: adjacent, then `subs/` /
+/// `subtitles/` (and one extra directory under those).
+pub fn associated_subtitles(video: &Path) -> Vec<AssociatedSub> {
     let Some(parent) = video.parent() else {
         return Vec::new();
     };
     let Some(stem) = video.file_stem().and_then(|s| s.to_str()) else {
         return Vec::new();
     };
+
     let mut found = Vec::new();
-    let entries = match fs::read_dir(parent) {
+    let mut seen = std::collections::HashSet::new();
+
+    collect_subs_in_dir(parent, stem, false, &mut found, &mut seen);
+    for name in ["subs", "subtitles"] {
+        let nested_root = parent.join(name);
+        if !nested_root.is_dir() {
+            continue;
+        }
+        collect_subs_in_dir(&nested_root, stem, true, &mut found, &mut seen);
+        // One extra nested level (e.g. subs/en/).
+        if let Ok(entries) = fs::read_dir(&nested_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect_subs_in_dir(&path, stem, true, &mut found, &mut seen);
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| a.path.cmp(&b.path));
+    found
+}
+
+fn collect_subs_in_dir(
+    dir: &Path,
+    stem: &str,
+    nested: bool,
+    out: &mut Vec<AssociatedSub>,
+    seen: &mut std::collections::HashSet<PathBuf>,
+) {
+    let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(err) => {
-            tracing::warn!(path = %parent.display(), error = %err, "cannot list subtitles");
-            return found;
+            tracing::warn!(path = %dir.display(), error = %err, "cannot list subtitles");
+            return;
         }
     };
     for entry in entries.flatten() {
@@ -188,12 +228,76 @@ pub fn adjacent_subtitles(video: &Path) -> Vec<PathBuf> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if subtitle_suffix(name, stem).is_some() {
-            found.push(path);
+        if subtitle_suffix(name, stem).is_none() {
+            continue;
+        }
+        if seen.insert(path.clone()) {
+            out.push(AssociatedSub { path, nested });
         }
     }
-    found.sort();
-    found
+}
+
+/// Every subtitle file under a media folder (adjacent + one-level `subs` tree).
+/// Used to log unassociated files that we will not move.
+pub fn list_subtitle_files(media_folder: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    collect_all_subs_in_dir(media_folder, &mut out);
+    for name in ["subs", "subtitles"] {
+        let nested_root = media_folder.join(name);
+        if !nested_root.is_dir() {
+            continue;
+        }
+        collect_all_subs_in_dir(&nested_root, &mut out);
+        if let Ok(entries) = fs::read_dir(&nested_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect_all_subs_in_dir(&path, &mut out);
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn collect_all_subs_in_dir(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_sub_path(&path) {
+            out.push(path);
+        }
+    }
+}
+
+/// Non-video, non-subtitle files sitting in `dir` (nfo, artwork, xml, unknown).
+pub fn extra_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+        if !is_file {
+            continue;
+        }
+        if is_video_path(&path) || is_sub_path(&path) {
+            continue;
+        }
+        out.push(path);
+    }
+    out.sort();
+    out
+}
+
+pub fn is_subs_dir_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n == "subs" || n == "subtitles"
 }
 
 /// If `filename` is a subtitle associated with `video_stem`, return the suffix

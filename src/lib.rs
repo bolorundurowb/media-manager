@@ -171,9 +171,7 @@ mod tests {
         })
         .unwrap();
 
-        assert!(root
-            .join("300 (2006)/300 (2006) - 1080p.mkv")
-            .is_file());
+        assert!(root.join("300 (2006)/300 (2006) - 1080p.mkv").is_file());
         assert!(!root.join("Movies/300 (2006) [1080p]").exists());
         let _ = fs::remove_dir_all(&root);
     }
@@ -243,6 +241,113 @@ mod tests {
         .unwrap();
         assert!(root.join("300 (2006) [1080p]/300.1080p.mkv").is_file());
         assert!(!root.join("300 (2006)").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn multiple_videos_in_one_movie_folder_need_per_file_labels() {
+        let root = temp_lib();
+        touch(&root.join("Inception (2010)/inception.1080p.mkv"));
+        touch(&root.join("Inception (2010)/inception.2160p.mkv"));
+
+        run(Options {
+            root: root.clone(),
+            kind: LibraryKind::Movies,
+            apply: true,
+        })
+        .unwrap();
+
+        assert!(root
+            .join("Inception (2010)/Inception (2010) - 1080p.mkv")
+            .is_file());
+        assert!(root
+            .join("Inception (2010)/Inception (2010) - 2160p.mkv")
+            .is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unlabeled_second_video_is_skipped() {
+        let root = temp_lib();
+        touch(&root.join("Movie (2020) [1080p]/labelled.1080p.mkv"));
+        touch(&root.join("Movie (2020) [1080p]/other.mkv"));
+
+        let summary = run(Options {
+            root: root.clone(),
+            kind: LibraryKind::Movies,
+            apply: true,
+        })
+        .unwrap();
+        assert!(summary.skipped >= 1);
+        assert!(root.join("Movie (2020) [1080p]/other.mkv").is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nested_subs_and_language_suffixes() {
+        let root = temp_lib();
+        touch(&root.join("300 (2006) [1080p]/300.1080p.mkv"));
+        touch(&root.join("300 (2006) [1080p]/subs/300.1080p.en.srt"));
+        touch(&root.join("300 (2006) [1080p]/subs/en/300.1080p.fr.srt"));
+        touch(&root.join("300 (2006) [1080p]/subs/unrelated.srt"));
+
+        run(Options {
+            root: root.clone(),
+            kind: LibraryKind::Movies,
+            apply: true,
+        })
+        .unwrap();
+
+        assert!(root.join("300 (2006)/300 (2006) - 1080p.mkv").is_file());
+        assert!(root
+            .join("300 (2006)/subs/300 (2006) - 1080p.en.srt")
+            .is_file());
+        assert!(root
+            .join("300 (2006)/subs/300 (2006) - 1080p.fr.srt")
+            .is_file());
+        assert!(root.join("300 (2006) [1080p]/subs/unrelated.srt").is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extras_move_when_folder_is_fully_processed() {
+        let root = temp_lib();
+        touch(&root.join("Onward.2020.2160p/Onward.2020.2160p.mkv"));
+        touch(&root.join("Onward.2020.2160p/movie.nfo"));
+        touch(&root.join("Onward.2020.2160p/poster.jpg"));
+
+        run(Options {
+            root: root.clone(),
+            kind: LibraryKind::Movies,
+            apply: true,
+        })
+        .unwrap();
+
+        assert!(root
+            .join("Onward (2020)/Onward (2020) - 2160p.mkv")
+            .is_file());
+        assert!(root.join("Onward (2020)/movie.nfo").is_file());
+        assert!(root.join("Onward (2020)/poster.jpg").is_file());
+        assert!(!root.join("Onward.2020.2160p").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extras_stay_when_a_video_is_skipped() {
+        let root = temp_lib();
+        touch(&root.join("Movie (2020) [1080p]/a.1080p.mkv"));
+        touch(&root.join("Movie (2020) [1080p]/b.mkv"));
+        touch(&root.join("Movie (2020) [1080p]/movie.nfo"));
+
+        run(Options {
+            root: root.clone(),
+            kind: LibraryKind::Movies,
+            apply: true,
+        })
+        .unwrap();
+
+        assert!(root.join("Movie (2020) [1080p]/movie.nfo").is_file());
+        assert!(root.join("Movie (2020) [1080p]/b.mkv").is_file());
         let _ = fs::remove_dir_all(&root);
     }
 }

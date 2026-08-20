@@ -108,6 +108,64 @@ mod movies {
     }
 
     #[test]
+    fn directors_cut_and_special_edition() {
+        let p = parse_media_name(
+            "Blade Runner (1982) - Director's Cut - 1080p",
+            LibraryKind::Movies,
+        )
+        .unwrap();
+        assert_eq!(p.title, "Blade Runner");
+        assert_eq!(p.year, Some(1982));
+        assert_eq!(p.edition.as_deref(), Some("Director's Cut"));
+        assert_eq!(p.resolution.as_deref(), Some("1080p"));
+        assert_eq!(version_label(&p).as_deref(), Some("1080p"));
+
+        let p = parse_media_name("Amelie (2001) Director's Cut", LibraryKind::Movies).unwrap();
+        assert_eq!(p.title, "Amelie");
+        assert_eq!(p.edition.as_deref(), Some("Director's Cut"));
+        assert_eq!(version_label(&p).as_deref(), Some("Director's Cut"));
+
+        let p = parse_media_name("Movie (2010) Special Edition", LibraryKind::Movies).unwrap();
+        assert_eq!(p.title, "Movie");
+        assert_eq!(p.edition.as_deref(), Some("Special Edition"));
+    }
+
+    #[test]
+    fn hyphenated_and_apostrophe_titles() {
+        let p = parse_media_name("Spider-Man (2002) [1080p]", LibraryKind::Movies).unwrap();
+        assert_eq!(p.title, "Spider-Man");
+        assert_eq!(p.year, Some(2002));
+
+        let p = parse_media_name("Ocean's Eleven (2001)", LibraryKind::Movies).unwrap();
+        assert_eq!(p.title, "Ocean's Eleven");
+        assert_eq!(identity_key(&p.title), "oceans eleven");
+    }
+
+    #[test]
+    fn similar_titles_have_different_identity_keys() {
+        assert_ne!(identity_key("300"), identity_key("300 Rise of an Empire"));
+        assert_ne!(identity_key("The Wire"), identity_key("The Wired"));
+    }
+
+    #[test]
+    fn ampersand_matches_and_for_identity_only() {
+        assert_eq!(
+            identity_key("Dungeons & Dragons"),
+            identity_key("Dungeons and Dragons")
+        );
+        let p = parse_media_name("Dungeons & Dragons (2000)", LibraryKind::Movies).unwrap();
+        assert_eq!(p.title, "Dungeons & Dragons");
+    }
+
+    #[test]
+    fn cut_in_a_title_is_not_an_edition() {
+        let p = parse_media_name("The Cut (2014)", LibraryKind::Movies).unwrap();
+        assert_eq!(p.title, "The Cut");
+        assert_eq!(p.edition, None);
+        assert_eq!(p.year, Some(2014));
+    }
+
+    #[test]
     fn identity_key_applies_unicode_nfc() {
         let decomposed = "Pok\u{65}\u{301}mon";
         let composed = "Pok\u{e9}mon";

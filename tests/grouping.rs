@@ -108,6 +108,49 @@ fn tv_groups_seasons_under_one_show() {
 }
 
 #[test]
+fn movies_do_not_merge_similar_but_different_titles() {
+    let folders = vec![
+        folder("300 (2006) [1080p]"),
+        folder("300 Rise of an Empire (2014) [1080p]"),
+    ];
+
+    let (outcome, skipped) = group_folders(LibraryKind::Movies, folders);
+    assert!(skipped.is_empty());
+
+    let GroupOutcome::Movies(groups) = outcome else {
+        panic!("expected movie groups");
+    };
+    assert_eq!(groups.len(), 2);
+}
+
+#[test]
+fn movies_merge_ampersand_with_and() {
+    let folders = vec![
+        folder("Dungeons & Dragons (2000) [1080p]"),
+        folder("Dungeons and Dragons (2000) [2160p]"),
+    ];
+
+    let (outcome, skipped) = group_folders(LibraryKind::Movies, folders);
+    assert!(skipped.is_empty());
+    let GroupOutcome::Movies(groups) = outcome else {
+        panic!("expected movie groups");
+    };
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].folders.len(), 2);
+}
+
+#[test]
+fn tv_does_not_merge_similar_show_names() {
+    let folders = vec![folder("The.Wire.S01.1080p"), folder("The.Wired.S01.1080p")];
+    let (outcome, skipped) = group_folders(LibraryKind::Tv, folders);
+    assert!(skipped.is_empty());
+    let GroupOutcome::Tv(groups) = outcome else {
+        panic!("expected tv groups");
+    };
+    assert_eq!(groups.len(), 2);
+}
+
+#[test]
 fn tv_skips_folder_without_season() {
     let folders = vec![folder("Narcos (2015)")];
 

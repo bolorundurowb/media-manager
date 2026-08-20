@@ -8,7 +8,9 @@ use crate::parse::{
     episode_file_stem, extension_lower, movie_folder_name, parse_episode, season_folder_name,
     show_folder_name, version_label,
 };
-use crate::scan::{adjacent_subtitles, subtitle_suffix};
+use crate::scan::{
+    associated_subtitles, extra_files, is_subs_dir_name, list_subtitle_files, subtitle_suffix,
+};
 
 #[derive(Debug, Clone)]
 pub struct MoveOp {
@@ -78,6 +80,7 @@ fn plan_movie_group(root: &Path, group: MovieGroup, plan: &mut Plan) {
         // label from its filename; the folder-level label is only a fallback
         // for a lone video.
         let multiple = folder.folder.videos.len() > 1;
+        let mut videos_ok = 0usize;
         for video in &folder.folder.videos {
             let file_parsed = video.file_name().and_then(|n| n.to_str()).and_then(|n| {
                 crate::parse::parse_media_name(n, crate::parse::LibraryKind::Movies).ok()
@@ -103,10 +106,27 @@ fn plan_movie_group(root: &Path, group: MovieGroup, plan: &mut Plan) {
             };
             let dest_name = format!("{folder_name} - {version}.{ext}");
             let dest = dest_dir.join(&dest_name);
+            if video.as_path() == dest.as_path() {
+                tracing::debug!(path = %video.display(), "already at destination");
+                videos_ok += 1;
+                continue;
+            }
             if !claim_dest(plan, &mut claimed, video, &dest) {
                 continue;
             }
             plan_video_and_subs(plan, video, &dest);
+            videos_ok += 1;
+        }
+        let sources = plan_move_sources(plan);
+        log_unassociated_subs(&folder.folder.path, &folder.folder.videos, &sources, plan);
+        if videos_ok == folder.folder.videos.len() && videos_ok > 0 {
+            plan_extras(
+                &folder.folder.path,
+                &folder.folder.videos,
+                &dest_dir,
+                plan,
+                &mut claimed,
+            );
         }
     }
 }
@@ -124,6 +144,7 @@ fn plan_tv_group(root: &Path, group: TvShowGroup, plan: &mut Plan) {
 
         for folder in folders {
             plan.source_folders.push(folder.folder.path.clone());
+            let mut videos_ok = 0usize;
             for video in &folder.folder.videos {
                 let Some(name) = video.file_name().and_then(|n| n.to_str()) else {
                     plan.skip(video.clone(), "non-utf8 filename");
@@ -149,10 +170,27 @@ fn plan_tv_group(root: &Path, group: TvShowGroup, plan: &mut Plan) {
                 };
                 let dest_name = format!("{}.{ext}", episode_file_stem(&group.title, &ep));
                 let dest = season_dir.join(dest_name);
+                if video.as_path() == dest.as_path() {
+                    tracing::debug!(path = %video.display(), "already at destination");
+                    videos_ok += 1;
+                    continue;
+                }
                 if !claim_dest(plan, &mut claimed, video, &dest) {
                     continue;
                 }
                 plan_video_and_subs(plan, video, &dest);
+                videos_ok += 1;
+            }
+            let sources = plan_move_sources(plan);
+            log_unassociated_subs(&folder.folder.path, &folder.folder.videos, &sources, plan);
+            if videos_ok == folder.folder.videos.len() && videos_ok > 0 {
+                plan_extras(
+                    &folder.folder.path,
+                    &folder.folder.videos,
+                    &season_dir,
+                    plan,
+                    &mut claimed,
+                );
             }
         }
     }
@@ -196,23 +234,32 @@ fn plan_video_and_subs(plan: &mut Plan, video: &Path, dest: &Path) {
         return;
     };
 
-    for sub in adjacent_subtitles(video) {
-        let Some(sub_name) = sub.file_name().and_then(|n| n.to_str()) else {
+    for sub in associated_subtitles(video) {
+        let Some(sub_name) = sub.path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
         let Some(suffix) = subtitle_suffix(sub_name, video_stem) else {
             continue;
         };
-        let Some(ext) = extension_lower(&sub) else {
+        let Some(ext) = extension_lower(&sub.path) else {
             continue;
         };
-        let sub_dest = dest_parent.join(format!("{dest_stem}{suffix}.{ext}"));
-        if sub == sub_dest {
+        let dest_dir = if sub.nested {
+            let subs_dir = dest_parent.join("subs");
+            if !plan.dirs.iter().any(|d| d == &subs_dir) {
+                plan.dirs.push(subs_dir.clone());
+            }
+            subs_dir
+        } else {
+            dest_parent.to_path_buf()
+        };
+        let sub_dest = dest_dir.join(format!("{dest_stem}{suffix}.{ext}"));
+        if sub.path == sub_dest {
             continue;
         }
         if sub_dest.exists() {
             plan.skip(
-                sub,
+                sub.path,
                 format!(
                     "subtitle destination already exists: {}",
                     sub_dest.display()
@@ -221,9 +268,87 @@ fn plan_video_and_subs(plan: &mut Plan, video: &Path, dest: &Path) {
             continue;
         }
         plan.moves.push(MoveOp {
-            from: sub,
+            from: sub.path,
             to: sub_dest,
         });
+    }
+}
+
+fn plan_move_sources(plan: &Plan) -> HashSet<PathBuf> {
+    plan.moves.iter().map(|m| m.from.clone()).collect()
+}
+
+fn log_unassociated_subs(
+    folder: &Path,
+    videos: &[PathBuf],
+    planned_from: &HashSet<PathBuf>,
+    plan: &mut Plan,
+) {
+    let mut dirs = vec![folder.to_path_buf()];
+    for video in videos {
+        if let Some(parent) = video.parent() {
+            if !dirs.iter().any(|d| d == parent) {
+                dirs.push(parent.to_path_buf());
+            }
+        }
+    }
+    let mut seen = HashSet::new();
+    for dir in dirs {
+        for sub in list_subtitle_files(&dir) {
+            if !seen.insert(sub.clone()) {
+                continue;
+            }
+            if planned_from.contains(&sub) {
+                continue;
+            }
+            if plan.skips.iter().any(|s| s.path == sub) {
+                continue;
+            }
+            plan.skip(sub, "unassociated subtitle; leaving in place");
+        }
+    }
+}
+
+fn plan_extras(
+    folder: &Path,
+    videos: &[PathBuf],
+    dest_dir: &Path,
+    plan: &mut Plan,
+    claimed: &mut HashSet<PathBuf>,
+) {
+    let mut dirs = vec![folder.to_path_buf()];
+    for video in videos {
+        if let Some(parent) = video.parent() {
+            if !dirs.iter().any(|d| d == parent) {
+                dirs.push(parent.to_path_buf());
+            }
+        }
+    }
+    let planned_from = plan_move_sources(plan);
+    for dir in dirs {
+        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if is_subs_dir_name(name) {
+            continue;
+        }
+        for extra in extra_files(&dir) {
+            if planned_from.contains(&extra) {
+                continue;
+            }
+            let Some(file_name) = extra.file_name() else {
+                continue;
+            };
+            let dest = dest_dir.join(file_name);
+            if extra == dest {
+                continue;
+            }
+            if !claim_dest(plan, claimed, &extra, &dest) {
+                continue;
+            }
+            plan.moves.push(MoveOp {
+                from: extra,
+                to: dest,
+            });
+        }
     }
 }
 
