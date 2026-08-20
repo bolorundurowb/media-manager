@@ -114,7 +114,7 @@ fn plan_movie_group(root: &Path, group: MovieGroup, plan: &mut Plan) {
             if !claim_dest(plan, &mut claimed, video, &dest) {
                 continue;
             }
-            plan_video_and_subs(plan, video, &dest);
+            plan_video_and_subs(plan, video, &dest, &mut claimed);
             videos_ok += 1;
         }
         let sources = plan_move_sources(plan);
@@ -178,7 +178,7 @@ fn plan_tv_group(root: &Path, group: TvShowGroup, plan: &mut Plan) {
                 if !claim_dest(plan, &mut claimed, video, &dest) {
                     continue;
                 }
-                plan_video_and_subs(plan, video, &dest);
+                plan_video_and_subs(plan, video, &dest, &mut claimed);
                 videos_ok += 1;
             }
             let sources = plan_move_sources(plan);
@@ -225,7 +225,7 @@ fn claim_dest(plan: &mut Plan, claimed: &mut HashSet<String>, from: &Path, dest:
 /// Case-folded comparison key for a destination path, used to catch
 /// destinations that differ only by case (a collision on case-insensitive
 /// filesystems).
-fn dest_key(path: &Path) -> String {
+pub(crate) fn dest_key(path: &Path) -> String {
     path.to_string_lossy().to_ascii_lowercase()
 }
 
@@ -242,7 +242,7 @@ const MAX_PATH_LEN: usize = 4096;
 /// 255 bytes/UTF-16 units.
 const MAX_COMPONENT_LEN: usize = 255;
 
-fn path_too_long(path: &Path) -> bool {
+pub(crate) fn path_too_long(path: &Path) -> bool {
     if path.as_os_str().len() >= MAX_PATH_LEN {
         return true;
     }
@@ -250,7 +250,12 @@ fn path_too_long(path: &Path) -> bool {
         .any(|c| c.as_os_str().len() > MAX_COMPONENT_LEN)
 }
 
-fn plan_video_and_subs(plan: &mut Plan, video: &Path, dest: &Path) {
+fn plan_video_and_subs(
+    plan: &mut Plan,
+    video: &Path,
+    dest: &Path,
+    claimed: &mut HashSet<String>,
+) {
     plan.moves.push(MoveOp {
         from: video.to_path_buf(),
         to: dest.to_path_buf(),
@@ -286,17 +291,7 @@ fn plan_video_and_subs(plan: &mut Plan, video: &Path, dest: &Path) {
             dest_parent.to_path_buf()
         };
         let sub_dest = dest_dir.join(format!("{dest_stem}{suffix}.{ext}"));
-        if sub.path == sub_dest {
-            continue;
-        }
-        if sub_dest.exists() {
-            plan.skip(
-                sub.path,
-                format!(
-                    "subtitle destination already exists: {}",
-                    sub_dest.display()
-                ),
-            );
+        if !claim_dest(plan, claimed, &sub.path, &sub_dest) {
             continue;
         }
         plan.moves.push(MoveOp {
@@ -409,14 +404,7 @@ fn validate_plan(root: &Path, plan: &mut Plan) {
             drop_moves.push((i, format!("destination path too long: {}", mv.to.display())));
             continue;
         }
-        if let Some(parent) = mv.from.parent() {
-            if is_under(&mv.to, parent) && mv.to != *parent {
-                // dest file inside its source folder is OK (rename in place).
-                // dest directory must not be a descendant in a way that moves a dir into itself;
-                // we only move files.
-            }
-        }
-        if is_under(&mv.from, &mv.to) {
+        if would_move_into_self(&mv.from, &mv.to) {
             drop_moves.push((
                 i,
                 format!(
@@ -433,6 +421,60 @@ fn validate_plan(root: &Path, plan: &mut Plan) {
     }
 }
 
+/// True when `path` is `root` or a descendant of `root`.
 fn is_under(root: &Path, path: &Path) -> bool {
     path.starts_with(root)
+}
+
+/// True when the destination is the source or is nested under it (for
+/// example `file.mkv` → `file.mkv/child`), which would move a path into
+/// itself. A rename *inside* the source's parent directory is allowed.
+fn would_move_into_self(from: &Path, to: &Path) -> bool {
+    if from == to {
+        return true;
+    }
+    is_under(from, to)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn dest_key_treats_case_as_a_collision() {
+        assert_eq!(
+            dest_key(Path::new(r"C:\lib\Movie\Cover.jpg")),
+            dest_key(Path::new(r"C:\lib\Movie\cover.jpg"))
+        );
+        assert_ne!(
+            dest_key(Path::new(r"C:\lib\Movie\Cover.jpg")),
+            dest_key(Path::new(r"C:\lib\Movie\poster.jpg"))
+        );
+    }
+
+    #[test]
+    fn path_too_long_rejects_oversized_component() {
+        let component = "x".repeat(MAX_COMPONENT_LEN + 1);
+        let path = PathBuf::from("root").join(component);
+        assert!(path_too_long(&path));
+        assert!(!path_too_long(Path::new("root/short.mkv")));
+    }
+
+    #[test]
+    fn path_too_long_rejects_oversized_full_path() {
+        let path = PathBuf::from("x".repeat(MAX_PATH_LEN));
+        assert!(path_too_long(&path));
+    }
+
+    #[test]
+    fn move_into_self_detects_nested_dest() {
+        let from = Path::new("/lib/video.mkv");
+        let to = Path::new("/lib/video.mkv/nested");
+        assert!(would_move_into_self(from, to));
+        assert!(!would_move_into_self(
+            Path::new("/lib/a/video.mkv"),
+            Path::new("/lib/b/video.mkv")
+        ));
+    }
 }

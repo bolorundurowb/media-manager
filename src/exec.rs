@@ -7,6 +7,7 @@
 //! one from starting. Nothing already moved is ever rolled back. Every
 //! attempt is also appended to the run's `Journal` for crash diagnosis.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::cancel::CancelToken;
@@ -33,6 +34,8 @@ pub fn execute(
 ) -> ExecReport {
     let mut report = ExecReport::default();
 
+    let mut failed_dirs: HashSet<std::path::PathBuf> = HashSet::new();
+
     for dir in &plan.dirs {
         if cancel.is_cancelled() {
             tracing::warn!("cancelled before all directories were created");
@@ -50,6 +53,7 @@ pub fn execute(
             Err(err) => {
                 tracing::error!(path = %dir.display(), error = %err, "failed to create directory");
                 journal.record(&format!("CREATE_DIR FAIL {} ({err})", dir.display()));
+                failed_dirs.insert(dir.clone());
                 report.failed.push(Skip {
                     path: dir.clone(),
                     reason: format!("create dir failed: {err}"),
@@ -58,19 +62,35 @@ pub fn execute(
         }
     }
 
-    if !report.failed.is_empty() {
-        tracing::error!("aborting file moves because directory creation failed");
-        journal.record("ABORT moves: directory creation failed");
-        return report;
-    }
-
+    let mut moves_started = 0usize;
     for mv in &plan.moves {
         if cancel.is_cancelled() {
-            let remaining = plan.moves.len() - report.moved - report.failed.len();
+            let remaining = plan.moves.len().saturating_sub(moves_started);
             tracing::warn!(remaining, "cancelled; not starting further moves");
             journal.record("CANCELLED before all moves finished");
             report.cancelled = true;
             return report;
+        }
+        if failed_dirs.iter().any(|d| mv.to.starts_with(d)) {
+            tracing::warn!(
+                from = %mv.from.display(),
+                to = %mv.to.display(),
+                "skipping move; destination directory was not created"
+            );
+            journal.record(&format!(
+                "MOVE SKIP {} -> {} (dest dir was not created)",
+                mv.from.display(),
+                mv.to.display()
+            ));
+            report.failed.push(Skip {
+                path: mv.from.clone(),
+                reason: format!(
+                    "destination directory was not created: {}",
+                    mv.to.display()
+                ),
+            });
+            moves_started += 1;
+            continue;
         }
         journal.record(&format!(
             "MOVE START {} -> {}",
@@ -105,6 +125,7 @@ pub fn execute(
                 });
             }
         }
+        moves_started += 1;
     }
 
     for folder in &plan.source_folders {
@@ -218,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn inaccessible_directory_aborts_before_any_move_starts() {
+    fn inaccessible_destination_dir_skips_only_moves_into_it() {
         let fs = FaultyFileSystem::new(InMemoryFileSystem::new().with_file("/root/src/a.mkv"))
             .fail_create_dir("/root/dest");
         let plan = plan_with(
@@ -228,11 +249,35 @@ mod tests {
         );
         let report = execute(&plan, &fs, &CancelToken::new(), &mut Journal::disabled());
         assert_eq!(report.created_dirs, 0);
-        assert_eq!(report.failed.len(), 1);
         assert_eq!(
             report.moved, 0,
-            "no move should start once dir creation fails"
+            "moves into a dest dir that failed to create must not run"
         );
+        assert!(report.failed.len() >= 2, "dir failure and skipped move");
+        assert!(fs.exists(Path::new("/root/src/a.mkv")));
+    }
+
+    #[test]
+    fn failed_dest_dir_does_not_block_unrelated_moves() {
+        let fs = FaultyFileSystem::new(
+            InMemoryFileSystem::new()
+                .with_file("/root/src_a/a.mkv")
+                .with_file("/root/src_b/b.mkv"),
+        )
+        .fail_create_dir("/root/dest_a");
+        let plan = plan_with(
+            vec!["/root/dest_a", "/root/dest_b"],
+            vec![
+                ("/root/src_a/a.mkv", "/root/dest_a/a.mkv"),
+                ("/root/src_b/b.mkv", "/root/dest_b/b.mkv"),
+            ],
+            vec!["/root/src_a", "/root/src_b"],
+        );
+        let report = execute(&plan, &fs, &CancelToken::new(), &mut Journal::disabled());
+        assert_eq!(report.moved, 1);
+        assert!(fs.exists(Path::new("/root/dest_b/b.mkv")));
+        assert!(fs.exists(Path::new("/root/src_a/a.mkv")));
+        assert!(!fs.exists(Path::new("/root/src_b/b.mkv")));
     }
 
     #[test]

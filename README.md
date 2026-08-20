@@ -86,8 +86,9 @@ This tool moves your media, so it is deliberately conservative:
   It's diagnostic only — nothing reads it back to decide what to do.
 - **Every step logs and continues.** Inaccessible directories, permission
   errors, and individual move failures are logged and skipped; they never
-  abort the rest of the run (a batch is only aborted up front if a
-  destination directory itself can't be created).
+  abort the rest of the run. If a destination directory cannot be created,
+  only moves into that directory are skipped — other movies and shows in
+  the same plan still proceed.
 
 At the end of a run, the log prints a summary: how many items were
 processed, how many groups were merged (e.g. multiple resolutions of the

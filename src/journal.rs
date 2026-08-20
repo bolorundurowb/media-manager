@@ -36,6 +36,7 @@ impl Journal {
     }
 
     /// A journal that never writes anywhere; used for pure in-memory tests.
+    #[cfg(test)]
     pub fn disabled() -> Journal {
         Journal {
             file: None,

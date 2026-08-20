@@ -46,16 +46,7 @@ impl FileSystem for RealFileSystem {
     }
 
     fn rename_no_replace(&self, from: &Path, to: &Path) -> io::Result<()> {
-        if to.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("destination exists: {}", to.display()),
-            ));
-        }
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::rename(from, to)
+        crate::os_rename::rename_no_replace(from, to)
     }
 
     fn remove_empty_dir(&self, path: &Path) -> io::Result<()> {

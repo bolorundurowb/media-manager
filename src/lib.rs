@@ -2,6 +2,7 @@ mod cancel;
 mod exec;
 pub mod group;
 mod journal;
+mod os_rename;
 pub mod parse;
 mod plan;
 mod report;
@@ -89,6 +90,7 @@ pub fn run(opts: Options) -> Result<Summary, Error> {
 
     if opts.apply {
         let mut journal = journal::Journal::open(&root);
+        tracing::info!(path = %journal.path().display(), "apply journal");
         journal.record(&format!(
             "RUN START root={} kind={:?} moves={}",
             root.display(),
@@ -455,9 +457,12 @@ mod tests {
     #[test]
     fn case_insensitive_duplicate_destinations_are_skipped() {
         let root = temp_lib();
-        touch(&root.join("Movie (2020) [1080p]/Movie.1080p.mkv"));
-        touch(&root.join("Movie (2020) [1080p]/POSTER.JPG"));
-        touch(&root.join("Movie (2020) [1080p]/Poster.jpg"));
+        // Two distinct source folders (so NTFS will keep both extras) whose
+        // extras would land on dest names that differ only by case.
+        touch(&root.join("Movie (2020) [1080p]/video.1080p.mkv"));
+        touch(&root.join("Movie (2020) [1080p]/Cover.jpg"));
+        touch(&root.join("Movie (2020) [2160p]/video.2160p.mkv"));
+        touch(&root.join("Movie (2020) [2160p]/cover.jpg"));
 
         let summary = run(Options {
             root: root.clone(),
@@ -470,13 +475,17 @@ mod tests {
         assert!(root
             .join("Movie (2020)/Movie (2020) - 1080p.mkv")
             .is_file());
+        assert!(root
+            .join("Movie (2020)/Movie (2020) - 2160p.mkv")
+            .is_file());
         assert!(summary.skipped >= 1);
-        // Two destinations differing only by case must never both land in
-        // the same folder: exactly one moves, the other is left behind
-        // rather than silently colliding on a case-insensitive filesystem.
-        assert!(root.join("Movie (2020) [1080p]").is_dir());
-        let left_behind = root.join("Movie (2020) [1080p]/Poster.jpg").is_file()
-            || root.join("Movie (2020) [1080p]/POSTER.JPG").is_file();
+        // Exactly one extra should have moved; the case-colliding extra
+        // stays in its source folder.
+        let dest_has_one_cover = root.join("Movie (2020)/Cover.jpg").is_file()
+            || root.join("Movie (2020)/cover.jpg").is_file();
+        assert!(dest_has_one_cover);
+        let left_behind = root.join("Movie (2020) [1080p]/Cover.jpg").is_file()
+            || root.join("Movie (2020) [2160p]/cover.jpg").is_file();
         assert!(left_behind);
         let _ = fs::remove_dir_all(&root);
     }
