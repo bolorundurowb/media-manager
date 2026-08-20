@@ -104,3 +104,51 @@ create-dir, rename-without-replace, remove-empty-dir) so its behaviour —
 including destination collisions, permission failures, and a rename that
 fails partway through a batch — can be tested against in-memory and
 fault-injecting backends without touching real disk.
+
+## GUI (optional)
+
+A small [egui](https://github.com/emilk/egui) window is available behind a
+`gui` Cargo feature, so a plain `cargo build` / `cargo test` never pulls in
+GUI dependencies:
+
+```sh
+cargo run --features gui --bin media-manager-gui
+```
+
+Unlike the CLI (whole root, one `--type` per run), the GUI lets you assign
+**type per selection**:
+
+1. **Browse** to a source folder. Its immediate children are listed below.
+2. **Dest (optional):** leave empty to organise in place, exactly like the
+   CLI. Set it to write the reorganised layout into a different folder
+   instead — the source folder is still what gets scanned, and files still
+   move rather than copy (same-volume moves; see the note below for
+   cross-volume moves on Linux/macOS).
+3. Select one or more children in the list, then **Mark as Movies** or
+   **Mark as TV**. A child can be re-assigned or cleared at any time before
+   Start. Unassigned children are left completely untouched — not scanned,
+   not moved.
+4. Choose **Dry-run** (default) or **Apply**, then **Start**. The log panel
+   streams the same wording the CLI prints (`CREATE`, `MOVE ... -> ...`,
+   `SKIP ... (reason)`, `FAIL`, and a final summary line) as the run
+   progresses on a background thread, so the window stays responsive.
+5. **Stop** requests cancellation the same way Ctrl+C does on the CLI: no
+   new step is *started*, but a move already in flight always finishes and
+   nothing already moved is rolled back.
+
+If the same title/year is assigned as both a movie and a TV show, neither
+side wins a race for that destination folder: both assignments are skipped
+and logged rather than one silently overwriting the other.
+
+**Known limitation:** a destination on a different drive/volume moves via
+the OS's own no-replace rename primitive. On Windows this transparently
+falls back to copy+delete across volumes. On Linux/macOS, a same-volume
+move is required today — a cross-volume destination will report those
+items as failed rather than corrupting anything, and a copy+remove fallback
+for that case is expected in a later update.
+
+The GUI calls the same `run_items` engine entry point the tests exercise —
+it does not reimplement scanning, parsing, grouping, planning, or executing.
+That entry point currently runs each assigned kind sequentially; if a future
+update parallelizes independent destinations, the GUI does not need to
+change.

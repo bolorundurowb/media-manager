@@ -176,10 +176,10 @@ impl FileSystem for InMemoryFileSystem {
         let has_children = state.dirs.iter().any(|p| p.parent() == Some(path))
             || state.files.iter().any(|p| p.parent() == Some(path));
         if has_children {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("directory not empty: {}", path.display()),
-            ));
+            return Err(io::Error::other(format!(
+                "directory not empty: {}",
+                path.display()
+            )));
         }
         state.dirs.remove(path);
         Ok(())

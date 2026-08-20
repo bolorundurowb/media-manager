@@ -2,6 +2,7 @@ mod cancel;
 mod exec;
 pub mod group;
 mod journal;
+mod multi;
 mod os_rename;
 pub mod parse;
 mod plan;
@@ -12,6 +13,7 @@ mod vfs;
 use std::path::{Path, PathBuf};
 
 pub use cancel::CancelToken;
+pub use multi::{run_items, LogEvent, WorkItem};
 pub use parse::LibraryKind;
 pub use plan::Plan;
 pub use report::{print_exec, print_plan};

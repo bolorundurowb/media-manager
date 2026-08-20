@@ -1,6 +1,6 @@
 [package]
 name = "media-manager"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "In-place Jellyfin movie and TV library normalizer"
 license = "MIT"
@@ -9,6 +9,16 @@ license = "MIT"
 name = "media-manager"
 path = "src/main.rs"
 
+[[bin]]
+name = "media-manager-gui"
+path = "src/bin/media-manager-gui.rs"
+required-features = ["gui"]
+
+[features]
+# Kept out of the default build so `cargo build` / `cargo test` stay a thin
+# CLI and never pull in eframe/egui/rfd (and their windowing/graphics deps).
+gui = ["dep:eframe", "dep:egui", "dep:rfd"]
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 ctrlc = "3.4"
@@ -16,6 +26,11 @@ regex = "1.11"
 tracing = "0.1"
 unicode-normalization = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# GUI (Phase 7), behind the `gui` feature.
+eframe = { version = "0.28", optional = true }
+egui = { version = "0.28", optional = true }
+rfd = { version = "0.14", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

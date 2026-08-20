@@ -33,6 +33,37 @@ pub fn scan_root(root: &Path) -> io::Result<Vec<MediaFolder>> {
     Ok(folders)
 }
 
+/// Scan a single, explicitly chosen child (used by the multi-selection
+/// engine in `crate::multi`, Phase 7): unlike `scan_root`, `path` itself is
+/// allowed to directly be a media folder, not only a container of one. If it
+/// directly holds a qualifying video it is treated as one `MediaFolder`;
+/// otherwise it is searched the same way `scan_root` searches the library
+/// root, so a container the user assigned (e.g. a whole "Movies/" folder)
+/// still works.
+pub(crate) fn scan_child(path: &Path) -> io::Result<Vec<MediaFolder>> {
+    let mut out = Vec::new();
+    if has_direct_video(path)? {
+        let mut videos = Vec::new();
+        collect_videos(path, 0, &mut videos)?;
+        videos.retain(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| !is_extra_filename(n))
+                .unwrap_or(true)
+        });
+        if !videos.is_empty() {
+            out.push(MediaFolder {
+                path: path.to_path_buf(),
+                videos,
+            });
+        }
+    } else {
+        discover_media_folders(path, 0, &mut out)?;
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
 fn discover_media_folders(dir: &Path, depth: u8, out: &mut Vec<MediaFolder>) -> io::Result<()> {
     if depth > MAX_DISCOVERY_DEPTH {
         return Ok(());
