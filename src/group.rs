@@ -29,6 +29,7 @@ pub enum GroupOutcome {
     Tv(Vec<TvShowGroup>),
 }
 
+#[derive(Debug, Clone)]
 pub struct SkippedFolder {
     pub path: std::path::PathBuf,
     pub reason: String,

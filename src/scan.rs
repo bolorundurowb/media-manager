@@ -1,4 +1,10 @@
-//! Discover one level of media folders under the library root.
+//! Discover media folders at any depth under the library root.
+//!
+//! A directory is a *media folder* when it directly contains at least one
+//! video file. Directories without direct videos are treated as containers and
+//! are searched recursively, so libraries nested under e.g. `Movies/` are still
+//! found. Once a media folder is identified, videos are gathered from it
+//! (including nested sub-folders, but never from `subs`/`subtitles`).
 
 use std::fs;
 use std::io;
@@ -6,7 +12,10 @@ use std::path::{Path, PathBuf};
 
 use crate::parse::{is_extra_filename, is_sub_path, is_video_path};
 
-const MAX_DEPTH: u8 = 3;
+/// Maximum depth for discovering nested media folders under the root.
+const MAX_DISCOVERY_DEPTH: u8 = 8;
+/// Maximum depth for collecting videos inside a single media folder.
+const MAX_VIDEO_DEPTH: u8 = 3;
 
 #[derive(Debug, Clone)]
 pub struct MediaFolder {
@@ -16,11 +25,23 @@ pub struct MediaFolder {
 
 pub fn scan_root(root: &Path) -> io::Result<Vec<MediaFolder>> {
     let mut folders = Vec::new();
-    let entries = match fs::read_dir(root) {
+    if let Err(err) = discover_media_folders(root, 0, &mut folders) {
+        tracing::error!(path = %root.display(), error = %err, "cannot read library root");
+        return Err(err);
+    }
+    folders.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(folders)
+}
+
+fn discover_media_folders(dir: &Path, depth: u8, out: &mut Vec<MediaFolder>) -> io::Result<()> {
+    if depth > MAX_DISCOVERY_DEPTH {
+        return Ok(());
+    }
+    let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(err) => {
-            tracing::error!(path = %root.display(), error = %err, "cannot read library root");
-            return Err(err);
+            tracing::warn!(path = %dir.display(), error = %err, "cannot read directory");
+            return Ok(());
         }
     };
 
@@ -33,39 +54,74 @@ pub fn scan_root(root: &Path) -> io::Result<Vec<MediaFolder>> {
             }
         };
         let path = entry.path();
-        let meta = match entry.metadata() {
-            Ok(m) => m,
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
             Err(err) => {
                 tracing::warn!(path = %path.display(), error = %err, "skipping inaccessible path");
                 continue;
             }
         };
-        if !meta.is_dir() {
+        if !file_type.is_dir() {
             continue;
         }
-        let mut videos = Vec::new();
-        if let Err(err) = collect_videos(&path, 0, &mut videos) {
-            tracing::warn!(path = %path.display(), error = %err, "error while scanning folder");
-        }
-        videos.retain(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| !is_extra_filename(n))
-                .unwrap_or(true)
-        });
-        if videos.is_empty() {
-            tracing::debug!(path = %path.display(), "no video files; skipping");
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if name == "subs" || name == "subtitles" {
             continue;
         }
-        folders.push(MediaFolder { path, videos });
-    }
 
-    folders.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(folders)
+        if has_direct_video(&path)? {
+            let mut videos = Vec::new();
+            if let Err(err) = collect_videos(&path, 0, &mut videos) {
+                tracing::warn!(path = %path.display(), error = %err, "error while scanning folder");
+            }
+            videos.retain(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| !is_extra_filename(n))
+                    .unwrap_or(true)
+            });
+            if videos.is_empty() {
+                tracing::debug!(path = %path.display(), "no video files; skipping");
+                continue;
+            }
+            out.push(MediaFolder { path, videos });
+        } else {
+            discover_media_folders(&path, depth + 1, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// True when `dir` directly contains at least one non-extra video file.
+fn has_direct_video(dir: &Path) -> io::Result<bool> {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(false),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+        if !is_file || !is_video_path(&path) {
+            continue;
+        }
+        let ok = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| !is_extra_filename(n))
+            .unwrap_or(true);
+        if ok {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn collect_videos(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) -> io::Result<()> {
-    if depth > MAX_DEPTH {
+    if depth > MAX_VIDEO_DEPTH {
         return Ok(());
     }
     let entries = match fs::read_dir(dir) {

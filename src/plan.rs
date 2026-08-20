@@ -74,14 +74,22 @@ fn plan_movie_group(root: &Path, group: MovieGroup, plan: &mut Plan) {
     for folder in &group.folders {
         plan.source_folders.push(folder.folder.path.clone());
         let folder_version = version_label(&folder.parsed);
+        // When a folder holds several videos, each must carry its own distinct
+        // label from its filename; the folder-level label is only a fallback
+        // for a lone video.
+        let multiple = folder.folder.videos.len() > 1;
         for video in &folder.folder.videos {
             let file_parsed = video.file_name().and_then(|n| n.to_str()).and_then(|n| {
                 crate::parse::parse_media_name(n, crate::parse::LibraryKind::Movies).ok()
             });
-            let version = file_parsed
-                .as_ref()
-                .and_then(version_label)
-                .or_else(|| folder_version.clone());
+            let file_version = file_parsed.as_ref().and_then(version_label);
+            let version = file_version.clone().or_else(|| {
+                if multiple {
+                    None
+                } else {
+                    folder_version.clone()
+                }
+            });
             let Some(version) = version else {
                 plan.skip(
                     video.clone(),

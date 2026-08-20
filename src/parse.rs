@@ -1,10 +1,13 @@
-//! Filename / folder-name parsing for Phase 1.
+//! Filename / folder-name parsing.
 //!
 //! Rules are table-driven. Nothing here is hard-coded to a particular title.
+//! Tokens are consumed in this order: resolution / source / edition / HDR /
+//! audio / codec, then a (bare) year, and whatever is left is the title.
 
 use std::sync::OnceLock;
 
 use regex::Regex;
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibraryKind {
@@ -18,6 +21,7 @@ pub struct ParsedName {
     pub year: Option<u16>,
     pub resolution: Option<String>,
     pub source: Option<String>,
+    pub edition: Option<String>,
     pub season: Option<u8>,
 }
 
@@ -47,47 +51,81 @@ impl std::fmt::Display for ParseError {
     }
 }
 
-const RESOLUTIONS: &[&str] = &["480p", "720p", "1080p", "1440p", "2160p", "4k", "8k"];
-const SOURCES: &[&str] = &[
-    "bluray", "blu-ray", "bdrip", "web-dl", "webdl", "webrip", "remux", "hdtv", "dvdrip",
+impl std::error::Error for ParseError {}
+
+// ---------------------------------------------------------------------------
+// Additive vocabulary tables. Each token maps to a canonical display value.
+// ---------------------------------------------------------------------------
+
+/// (token, canonical) — resolution output is the Jellyfin resolution string.
+const RESOLUTIONS: &[(&str, &str)] = &[
+    ("480p", "480p"),
+    ("576p", "576p"),
+    ("720p", "720p"),
+    ("1080p", "1080p"),
+    ("1440p", "1440p"),
+    ("2160p", "2160p"),
+    ("4k", "2160p"),
+    ("8k", "4320p"),
 ];
-const QUALITY: &[&str] = &[
-    "x265",
-    "x264",
-    "h265",
-    "h264",
-    "hevc",
-    "avc",
-    "av1",
-    "10bit",
-    "10-bit",
-    "8bit",
+
+/// (token, canonical) — source names.
+const SOURCES: &[(&str, &str)] = &[
+    ("bluray", "BluRay"),
+    ("blu-ray", "BluRay"),
+    ("bdrip", "BluRay"),
+    ("brrip", "BluRay"),
+    ("web-dl", "WEB-DL"),
+    ("webdl", "WEB-DL"),
+    ("webrip", "WEBRip"),
+    ("remux", "Remux"),
+    ("hdtv", "HDTV"),
+    ("dvdrip", "DVD"),
+    ("dvd", "DVD"),
+];
+
+/// (token, canonical) — edition labels.
+const EDITIONS: &[(&str, &str)] = &[
+    ("extended", "Extended"),
+    ("unrated", "Unrated"),
+    ("uncut", "Uncut"),
+    ("directors", "Director's Cut"),
+    ("theatrical", "Theatrical"),
+    ("imax", "IMAX"),
+    ("remastered", "Remastered"),
+    ("criterion", "Criterion"),
+    ("collectors", "Collector's Edition"),
+    ("ultimate", "Ultimate Edition"),
+    ("alternate", "Alternate"),
+    ("special", "Special Edition"),
+    ("cut", "Cut"),
+];
+
+/// HDR / dynamic-range tokens (consumed, not stored).
+const HDR_TOKENS: &[&str] = &[
     "hdr",
     "hdr10",
+    "hdr10+",
+    "hdr10plus",
+    "dolby",
+    "vision",
     "dv",
     "dovi",
-    "aac",
-    "ac3",
-    "dts",
-    "truehd",
-    "atmos",
-    "dd5",
-    "ddp5",
-    "ddp",
-    "dd",
-    "5.1",
-    "7.1",
-    "2.0",
-    "proper",
-    "repack",
-    "internal",
-    "extended",
-    "unrated",
-    "directors",
-    "cut",
-    "multi",
-    "subs",
-    "dubbed",
+    "hlg",
+    "sdr",
+];
+
+/// Audio codec tokens (consumed, not stored). Channel counts are matched
+/// separately by `channel_re`.
+const AUDIO_TOKENS: &[&str] = &[
+    "aac", "ac3", "eac3", "dts", "dtshd", "dts-hd", "truehd", "atmos", "dd", "ddp", "flac", "mp3",
+    "opus",
+];
+
+/// Video codec / bit-depth tokens (consumed, not stored).
+const CODEC_TOKENS: &[&str] = &[
+    "x265", "x264", "h265", "h264", "hevc", "avc", "av1", "10bit", "10-bit", "8bit", "mpeg2",
+    "vc1", "xvid", "divx", "vp9",
 ];
 
 /// Resolutions that look numeric and must never be treated as a year.
@@ -110,6 +148,8 @@ pub fn is_valid_year(n: u16) -> bool {
     n >= 1888 && n <= max_year() && !NOT_YEARS.contains(&n)
 }
 
+/// Map `.`, `_` and `+` to spaces and collapse runs of whitespace. Used before
+/// tokenising so dotted names (`Onward.2020.…`) parse like spaced names.
 pub fn unify_separators(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_space = false;
@@ -131,16 +171,26 @@ pub fn unify_separators(s: &str) -> String {
     out.trim().to_string()
 }
 
+fn collapse_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            out.push(ch);
+            prev_space = false;
+        }
+    }
+    out.trim().to_string()
+}
+
 fn year_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^(\d{4})$").expect("year regex"))
-}
-
-fn res_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(480p|720p|1080p|1440p|2160p|4k|8k)\b").expect("res regex")
-    })
 }
 
 fn season_token_re() -> &'static Regex {
@@ -167,42 +217,55 @@ fn codec_group_re() -> &'static Regex {
     })
 }
 
-/// Peel `(...)` and `[...]` groups. Parenthesised years win over later bare years.
+fn channel_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)^\d\.\d$").expect("channel regex"))
+}
+
+/// Peel `(...)` and `[...]` groups. A parenthesised year is preferred over a
+/// bracketed one; everything else becomes a tag for `apply_tag_blob`.
 fn peel_groups(s: &str) -> (String, Option<u16>, Vec<String>) {
     let mut core = String::new();
-    let mut year = None;
+    let mut paren_year: Option<u16> = None;
+    let mut bracket_year: Option<u16> = None;
     let mut tags = Vec::new();
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        let closer = match c {
-            '(' => Some(')'),
-            '[' => Some(']'),
-            _ => None,
-        };
-        if let Some(end) = closer {
-            if let Some(rel) = chars[i + 1..].iter().position(|&ch| ch == end) {
-                let inner: String = chars[i + 1..i + 1 + rel].iter().collect();
-                let trimmed = inner.trim();
-                if let Some(y) = parse_year_token(trimmed) {
-                    if year.is_none() {
-                        year = Some(y);
-                    }
-                } else if !trimmed.is_empty() {
-                    tags.push(trimmed.to_string());
-                }
-                i += rel + 2;
-                if !core.ends_with(' ') {
-                    core.push(' ');
-                }
+        let (is_paren, close) = match c {
+            '(' => (true, ')'),
+            '[' => (false, ']'),
+            _ => {
+                core.push(c);
+                i += 1;
                 continue;
             }
+        };
+        if let Some(rel) = chars[i + 1..].iter().position(|&ch| ch == close) {
+            let inner: String = chars[i + 1..i + 1 + rel].iter().collect();
+            let trimmed = inner.trim();
+            if let Some(y) = parse_year_token(trimmed) {
+                if is_paren {
+                    if paren_year.is_none() {
+                        paren_year = Some(y);
+                    }
+                } else if bracket_year.is_none() {
+                    bracket_year = Some(y);
+                }
+            } else if !trimmed.is_empty() {
+                tags.push(trimmed.to_string());
+            }
+            i += rel + 2;
+            if !core.ends_with(' ') {
+                core.push(' ');
+            }
+            continue;
         }
         core.push(c);
         i += 1;
     }
-    (unify_separators(&core), year, tags)
+    (unify_separators(&core), paren_year.or(bracket_year), tags)
 }
 
 fn parse_year_token(tok: &str) -> Option<u16> {
@@ -213,40 +276,34 @@ fn parse_year_token(tok: &str) -> Option<u16> {
 
 fn normalize_resolution(tok: &str) -> Option<String> {
     let t = tok.trim().to_ascii_lowercase();
-    match t.as_str() {
-        "480p" | "720p" | "1080p" | "1440p" | "2160p" => Some(t),
-        "4k" => Some("2160p".to_string()),
-        "8k" => Some("4320p".to_string()),
-        _ => None,
-    }
+    RESOLUTIONS
+        .iter()
+        .find(|(k, _)| *k == t)
+        .map(|(_, v)| (*v).to_string())
 }
 
-fn is_source_token(tok: &str) -> Option<String> {
+fn source_token(tok: &str) -> Option<&'static str> {
     let t = tok.trim().to_ascii_lowercase();
-    let canon = match t.as_str() {
-        "bluray" | "blu-ray" | "bdrip" => "BluRay",
-        "web-dl" | "webdl" => "WEB-DL",
-        "webrip" => "WEBRip",
-        "remux" => "Remux",
-        "hdtv" => "HDTV",
-        "dvdrip" => "DVD",
-        _ => return None,
-    };
-    Some(canon.to_string())
+    SOURCES.iter().find(|(k, _)| *k == t).map(|(_, v)| *v)
 }
 
-fn is_quality_token(tok: &str) -> bool {
+fn edition_token(tok: &str) -> Option<&'static str> {
     let t = tok.trim().to_ascii_lowercase();
-    if QUALITY.contains(&t.as_str()) {
-        return true;
-    }
-    if RESOLUTIONS.contains(&t.as_str()) {
-        return true;
-    }
-    if SOURCES.contains(&t.as_str()) {
-        return true;
-    }
-    codec_group_re().is_match(&t)
+    EDITIONS.iter().find(|(k, _)| *k == t).map(|(_, v)| *v)
+}
+
+fn is_hdr_token(tok: &str) -> bool {
+    HDR_TOKENS.contains(&tok.trim().to_ascii_lowercase().as_str())
+}
+
+fn is_audio_token(tok: &str) -> bool {
+    let t = tok.trim().to_ascii_lowercase();
+    AUDIO_TOKENS.contains(&t.as_str()) || channel_re().is_match(&t)
+}
+
+fn is_codec_token(tok: &str) -> bool {
+    let t = tok.trim().to_ascii_lowercase();
+    CODEC_TOKENS.contains(&t.as_str()) || codec_group_re().is_match(&t)
 }
 
 fn parse_season_token(tok: &str) -> Option<u8> {
@@ -254,17 +311,29 @@ fn parse_season_token(tok: &str) -> Option<u8> {
     cap.get(1)?.as_str().parse().ok()
 }
 
-fn apply_tag_blob(blob: &str, resolution: &mut Option<String>, source: &mut Option<String>) {
+fn apply_tag_blob(
+    blob: &str,
+    resolution: &mut Option<String>,
+    source: &mut Option<String>,
+    edition: &mut Option<String>,
+) {
     let unified = unify_separators(blob);
-    if let Some(m) = res_re().find(&unified) {
-        if resolution.is_none() {
-            *resolution = normalize_resolution(m.as_str());
-        }
-    }
     for tok in unified.split_whitespace() {
+        if resolution.is_none() {
+            if let Some(r) = normalize_resolution(tok) {
+                *resolution = Some(r);
+                continue;
+            }
+        }
         if source.is_none() {
-            if let Some(s) = is_source_token(tok) {
-                *source = Some(s);
+            if let Some(s) = source_token(tok) {
+                *source = Some(s.to_string());
+                continue;
+            }
+        }
+        if edition.is_none() {
+            if let Some(e) = edition_token(tok) {
+                *edition = Some(e.to_string());
             }
         }
     }
@@ -275,53 +344,57 @@ pub fn parse_media_name(raw: &str, kind: LibraryKind) -> Result<ParsedName, Pars
     let (core, mut year, tags) = peel_groups(&unify_separators(raw));
     let mut resolution = None;
     let mut source = None;
+    let mut edition = None;
     for tag in &tags {
-        apply_tag_blob(tag, &mut resolution, &mut source);
+        apply_tag_blob(tag, &mut resolution, &mut source, &mut edition);
     }
 
-    let tokens: Vec<&str> = core.split_whitespace().filter(|t| !t.is_empty()).collect();
+    let tokens: Vec<&str> = core.split_whitespace().collect();
     let mut title_parts: Vec<&str> = Vec::new();
     let mut season_from_word: Option<u8> = None;
     let mut season_from_s: Option<u8> = None;
-    let mut i = 0;
+    // Once a quality/season/year token is seen, later unknown tokens are
+    // release-group noise and are dropped rather than treated as title.
     let mut in_tags = false;
+    let mut i = 0;
 
     while i < tokens.len() {
         let tok = tokens[i];
 
-        if tok.eq_ignore_ascii_case("season") {
-            if let Some(next) = tokens.get(i + 1) {
-                if let Ok(n) = next.parse::<u8>() {
-                    match season_from_word {
-                        None => season_from_word = Some(n),
-                        Some(prev) if prev != n => {
-                            return Err(ParseError::SeasonMismatch { a: prev, b: n });
+        // Season tokens only make sense in TV mode.
+        if kind == LibraryKind::Tv {
+            if tok.eq_ignore_ascii_case("season") {
+                if let Some(next) = tokens.get(i + 1) {
+                    if let Ok(n) = next.parse::<u8>() {
+                        match season_from_word {
+                            None => season_from_word = Some(n),
+                            Some(prev) if prev != n => {
+                                return Err(ParseError::SeasonMismatch { a: prev, b: n });
+                            }
+                            Some(_) => {}
                         }
-                        Some(_) => {}
+                        in_tags = true;
+                        i += 2;
+                        continue;
                     }
-                    i += 2;
-                    in_tags = true;
-                    continue;
                 }
-            }
-            if !in_tags {
                 title_parts.push(tok);
+                i += 1;
+                continue;
             }
-            i += 1;
-            continue;
-        }
 
-        if let Some(n) = parse_season_token(tok) {
-            match season_from_s {
-                None => season_from_s = Some(n),
-                Some(prev) if prev != n => {
-                    return Err(ParseError::SeasonMismatch { a: prev, b: n });
+            if let Some(n) = parse_season_token(tok) {
+                match season_from_s {
+                    None => season_from_s = Some(n),
+                    Some(prev) if prev != n => {
+                        return Err(ParseError::SeasonMismatch { a: prev, b: n });
+                    }
+                    Some(_) => {}
                 }
-                Some(_) => {}
+                in_tags = true;
+                i += 1;
+                continue;
             }
-            in_tags = true;
-            i += 1;
-            continue;
         }
 
         if let Some(r) = normalize_resolution(tok) {
@@ -333,26 +406,40 @@ pub fn parse_media_name(raw: &str, kind: LibraryKind) -> Result<ParsedName, Pars
             continue;
         }
 
-        if let Some(y) = parse_year_token(tok) {
-            if year.is_none() {
-                year = Some(y);
-            }
-            in_tags = true;
-            i += 1;
-            continue;
-        }
-
-        if let Some(s) = is_source_token(tok) {
+        if let Some(s) = source_token(tok) {
             if source.is_none() {
-                source = Some(s);
+                source = Some(s.to_string());
             }
             in_tags = true;
             i += 1;
             continue;
         }
 
-        if is_quality_token(tok) {
+        if let Some(e) = edition_token(tok) {
+            if edition.is_none() {
+                edition = Some(e.to_string());
+            }
             in_tags = true;
+            i += 1;
+            continue;
+        }
+
+        if is_hdr_token(tok) || is_audio_token(tok) || is_codec_token(tok) {
+            in_tags = true;
+            i += 1;
+            continue;
+        }
+
+        // Bare year token: only consumed as the year when it follows the title
+        // and no year is known yet. A leading year-like token (`2012`) or one
+        // after a parenthesised year (`Blade Runner 2049 (2017)`) stays title.
+        if let Some(y) = parse_year_token(tok) {
+            if year.is_none() && !title_parts.is_empty() {
+                year = Some(y);
+                in_tags = true;
+            } else if !in_tags {
+                title_parts.push(tok);
+            }
             i += 1;
             continue;
         }
@@ -389,6 +476,7 @@ pub fn parse_media_name(raw: &str, kind: LibraryKind) -> Result<ParsedName, Pars
         year,
         resolution,
         source,
+        edition,
         season,
     })
 }
@@ -432,8 +520,22 @@ pub fn strip_extension(name: &str) -> &str {
     }
 }
 
+/// Matching-only identity: Unicode NFC, case-fold, `&`/`+` → "and", strip
+/// apostrophes, and collapse remaining punctuation to spaces. The display
+/// title is never derived from this key.
 pub fn identity_key(title: &str) -> String {
-    title.trim().to_lowercase()
+    let nfc: String = title.nfc().collect();
+    let lower = nfc.to_lowercase();
+    let mut out = String::with_capacity(lower.len());
+    for ch in lower.chars() {
+        match ch {
+            '&' | '+' => out.push_str(" and "),
+            '\'' | '\u{2019}' | '\u{02bc}' => {}
+            c if c.is_alphanumeric() => out.push(c),
+            _ => out.push(' '),
+        }
+    }
+    collapse_whitespace(&out)
 }
 
 pub fn movie_folder_name(title: &str, year: Option<u16>) -> String {
@@ -443,8 +545,13 @@ pub fn movie_folder_name(title: &str, year: Option<u16>) -> String {
     }
 }
 
+/// Version fallback: resolution → edition → source.
 pub fn version_label(parsed: &ParsedName) -> Option<String> {
-    parsed.resolution.clone().or_else(|| parsed.source.clone())
+    parsed
+        .resolution
+        .clone()
+        .or_else(|| parsed.edition.clone())
+        .or_else(|| parsed.source.clone())
 }
 
 pub fn show_folder_name(title: &str, year: Option<u16>) -> String {
@@ -489,131 +596,4 @@ pub fn is_extra_filename(name: &str) -> bool {
     let stem = unify_separators(strip_extension(name)).to_ascii_lowercase();
     stem.split(|c: char| !c.is_ascii_alphanumeric())
         .any(|tok| tok == "sample" || tok == "trailer")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn movie_300_1080() {
-        let p = parse_media_name("300 (2006) [1080p]", LibraryKind::Movies).unwrap();
-        assert_eq!(p.title, "300");
-        assert_eq!(p.year, Some(2006));
-        assert_eq!(p.resolution.as_deref(), Some("1080p"));
-        assert_eq!(version_label(&p).as_deref(), Some("1080p"));
-    }
-
-    #[test]
-    fn movie_300_2160() {
-        let p = parse_media_name("300 (2006) [2160p]", LibraryKind::Movies).unwrap();
-        assert_eq!(p.title, "300");
-        assert_eq!(p.year, Some(2006));
-        assert_eq!(p.resolution.as_deref(), Some("2160p"));
-    }
-
-    #[test]
-    fn movie_onward_dotted() {
-        let p = parse_media_name(
-            "Onward.2020.2160p.HDR.WEB-DL.DD5.1.HEVC-EVO[TGx]",
-            LibraryKind::Movies,
-        )
-        .unwrap();
-        assert_eq!(p.title, "Onward");
-        assert_eq!(p.year, Some(2020));
-        assert_eq!(p.resolution.as_deref(), Some("2160p"));
-        assert_eq!(p.source.as_deref(), Some("WEB-DL"));
-    }
-
-    #[test]
-    fn tv_narcos_redundant_season() {
-        let p = parse_media_name(
-            "Narcos (2015) Season 1 S01 (1080p BluRay x265 HEVC 10bit AAC 5.1 Vyndros)",
-            LibraryKind::Tv,
-        )
-        .unwrap();
-        assert_eq!(p.title, "Narcos");
-        assert_eq!(p.year, Some(2015));
-        assert_eq!(p.season, Some(1));
-        assert_eq!(p.resolution.as_deref(), Some("1080p"));
-    }
-
-    #[test]
-    fn tv_the_wire_dotted() {
-        let p = parse_media_name("The.Wire.S01.1080p.BluRay.x265-RARBG", LibraryKind::Tv).unwrap();
-        assert_eq!(p.title, "The Wire");
-        assert_eq!(p.year, None);
-        assert_eq!(p.season, Some(1));
-        assert_eq!(p.resolution.as_deref(), Some("1080p"));
-        assert_eq!(p.source.as_deref(), Some("BluRay"));
-    }
-
-    #[test]
-    fn tv_missing_season_is_error() {
-        let err = parse_media_name("Narcos (2015)", LibraryKind::Tv).unwrap_err();
-        assert_eq!(err, ParseError::MissingSeason);
-    }
-
-    #[test]
-    fn tv_season_mismatch_is_error() {
-        let err = parse_media_name("Show Season 1 S02 1080p", LibraryKind::Tv).unwrap_err();
-        match err {
-            ParseError::SeasonMismatch { a, b } => {
-                assert!(a == 1 || b == 1);
-                assert!(a == 2 || b == 2);
-            }
-            other => panic!("unexpected {other:?}"),
-        }
-    }
-
-    #[test]
-    fn different_years_are_different_identities() {
-        let a = parse_media_name("300 (2006)", LibraryKind::Movies).unwrap();
-        let b = parse_media_name("300 (2014)", LibraryKind::Movies).unwrap();
-        assert_eq!(identity_key(&a.title), identity_key(&b.title));
-        assert_ne!(a.year, b.year);
-    }
-
-    #[test]
-    fn episode_sxxexx_and_span() {
-        let e = parse_episode("Narcos.S01E03.1080p.mkv").unwrap();
-        assert_eq!(e.season, 1);
-        assert_eq!(e.episode, 3);
-        assert_eq!(e.episode_end, None);
-        let m = parse_episode("Show S01E01-E02.mkv").unwrap();
-        assert_eq!(m.episode, 1);
-        assert_eq!(m.episode_end, Some(2));
-        let x = parse_episode("show.1x05.mkv").unwrap();
-        assert_eq!(x.season, 1);
-        assert_eq!(x.episode, 5);
-    }
-
-    #[test]
-    fn resolution_not_a_year() {
-        assert!(!is_valid_year(1080));
-        assert!(!is_valid_year(2160));
-        assert!(is_valid_year(2006));
-    }
-
-    #[test]
-    fn sample_and_trailer_detected() {
-        assert!(is_extra_filename("movie.sample.mkv"));
-        assert!(is_extra_filename("movie-trailer.mp4"));
-        assert!(!is_extra_filename("The.Wire.S01E01.mkv"));
-    }
-
-    #[test]
-    fn numeric_title_is_not_eaten_as_a_tag() {
-        let p = parse_media_name("42 (2013)", LibraryKind::Movies).unwrap();
-        assert_eq!(p.title, "42");
-        assert_eq!(p.year, Some(2013));
-    }
-
-    #[test]
-    fn season_of_the_witch_stays_a_movie_title() {
-        let p = parse_media_name("Season of the Witch (2011)", LibraryKind::Movies).unwrap();
-        assert_eq!(p.title, "Season of the Witch");
-        assert_eq!(p.year, Some(2011));
-        assert_eq!(p.season, None);
-    }
 }

@@ -1,9 +1,9 @@
 mod exec;
-mod group;
-mod parse;
+pub mod group;
+pub mod parse;
 mod plan;
 mod report;
-mod scan;
+pub mod scan;
 
 use std::path::{Path, PathBuf};
 
@@ -156,6 +156,25 @@ mod tests {
 
         assert!(root.join("300 (2006)/300 (2006) - 1080p.mkv").is_file());
         assert!(root.join("300 (2014)/300 (2014) - 1080p.mkv").is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nested_movie_folder_lands_under_root() {
+        let root = temp_lib();
+        touch(&root.join("Movies/300 (2006) [1080p]/300.1080p.mkv"));
+
+        run(Options {
+            root: root.clone(),
+            kind: LibraryKind::Movies,
+            apply: true,
+        })
+        .unwrap();
+
+        assert!(root
+            .join("300 (2006)/300 (2006) - 1080p.mkv")
+            .is_file());
+        assert!(!root.join("Movies/300 (2006) [1080p]").exists());
         let _ = fs::remove_dir_all(&root);
     }
 
