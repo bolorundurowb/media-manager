@@ -1,0 +1,16 @@
+[package]
+name = "media-manager"
+version = "0.1.0"
+edition = "2021"
+description = "In-place Jellyfin movie and TV library normalizer"
+license = "MIT"
+
+[[bin]]
+name = "media-manager"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+regex = "1.11"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
