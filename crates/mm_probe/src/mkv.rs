@@ -25,14 +25,32 @@ impl Prober for MatroskaProber {
         // so missing/unreadable paths stay [`ProbeError::Io`], while a readable
         // but invalid container is [`ProbeError::Parse`].
         std::fs::File::open(p).map_err(|e| ProbeError::io(p, e))?;
-        let mkv = matroska::open(p).map_err(|e| ProbeError::parse(p, e.to_string()))?;
-        let video = mkv.video_tracks().find_map(video_info_from_track);
-        Ok(Probe {
-            video,
-            audio: None,
-            duration: mkv.info.duration,
-            subtitle_tracks: vec![],
-        })
+        let path = p.to_path_buf();
+        let path_for_parse = path.clone();
+        // Same watchdog as the MP4 prober: a corrupted element-size field
+        // should never be able to hang the pipeline forever, even if this
+        // parser has not been observed doing so on the current fixtures.
+        let outcome = crate::run_with_timeout(move || {
+            matroska::open(&path_for_parse)
+                .map(|mkv| {
+                    let video = mkv.video_tracks().find_map(video_info_from_track);
+                    Probe {
+                        video,
+                        audio: None,
+                        duration: mkv.info.duration,
+                        subtitle_tracks: vec![],
+                    }
+                })
+                .map_err(|e| e.to_string())
+        });
+        match outcome {
+            Some(Ok(probe)) => Ok(probe),
+            Some(Err(detail)) => Err(ProbeError::parse(path, detail)),
+            None => Err(ProbeError::Timeout {
+                path,
+                timeout_secs: crate::PROBE_TIMEOUT.as_secs(),
+            }),
+        }
     }
 }
 

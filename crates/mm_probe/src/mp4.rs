@@ -38,18 +38,36 @@ impl Prober for Mp4Prober {
 
     fn probe(&self, p: &Path) -> Result<Probe, ProbeError> {
         let bytes = std::fs::read(p).map_err(|e| ProbeError::io(p, e))?;
-        let mp4 = Mp4::read_bytes(&bytes).map_err(|e| ProbeError::parse(p, e.to_string()))?;
-        let video_track = video_track_of(&mp4);
-        let video = video_track.map(|t| video_info(&mp4, t));
-        let duration = video_track
-            .and_then(track_duration)
-            .or_else(|| mvhd_duration(&mp4));
-        Ok(Probe {
-            video,
-            audio: None,
-            duration,
-            subtitle_tracks: vec![],
-        })
+        let path = p.to_path_buf();
+        // `re_mp4` has been observed spinning forever on a single corrupted
+        // box-size byte (a truncated/hostile `stsc` box), so the actual
+        // parse runs under a watchdog rather than directly here (§4
+        // non-panic guarantee extended to non-hang).
+        let outcome = crate::run_with_timeout(move || {
+            Mp4::read_bytes(&bytes)
+                .map(|mp4| {
+                    let video_track = video_track_of(&mp4);
+                    let video = video_track.map(|t| video_info(&mp4, t));
+                    let duration = video_track
+                        .and_then(track_duration)
+                        .or_else(|| mvhd_duration(&mp4));
+                    Probe {
+                        video,
+                        audio: None,
+                        duration,
+                        subtitle_tracks: vec![],
+                    }
+                })
+                .map_err(|e| e.to_string())
+        });
+        match outcome {
+            Some(Ok(probe)) => Ok(probe),
+            Some(Err(detail)) => Err(ProbeError::parse(path, detail)),
+            None => Err(ProbeError::Timeout {
+                path,
+                timeout_secs: crate::PROBE_TIMEOUT.as_secs(),
+            }),
+        }
     }
 }
 

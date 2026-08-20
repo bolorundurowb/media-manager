@@ -28,6 +28,12 @@ pub struct ExecOptions {
     /// Directory for `journal.jsonl` and `plans/`. Tests must pass a temp dir.
     pub journal_dir: PathBuf,
     pub cancel: CancelToken,
+    /// Explicit, per-invocation authorisation for [`mm_core::config::ConflictPolicy::Replace`]
+    /// (§5.6). `cfg.conflict.policy == Replace` alone is not enough: a config file edited
+    /// months ago must not silently authorise overwrites today. When `false`, an occupied
+    /// destination under `Replace` policy is downgraded to a reported `Conflict` instead of
+    /// being replaced — the existing file is never touched.
+    pub allow_replace: bool,
 }
 
 /// Options for [`gc`].
@@ -430,6 +436,11 @@ fn move_one<F: FileSystem>(
             OccupiedDecision::Skip { .. } => return Ok(MoveResult::Skipped),
             OccupiedDecision::Conflict { .. } => return Ok(MoveResult::Conflicted),
             OccupiedDecision::Replace => {
+                if !opts.allow_replace {
+                    // Config alone never authorises a replace (§5.6): the
+                    // destination is left untouched and reported as a conflict.
+                    return Ok(MoveResult::Conflicted);
+                }
                 return move_replace(fs, cfg, opts, journal, from, &dest);
             }
         }
@@ -730,6 +741,7 @@ fn move_replace<F: FileSystem>(
     let src_hash = if cfg.moves.verify == VerifyMode::Hash {
         match fs.hash(from, &opts.cancel) {
             Ok(h) => Some(h),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => return Ok(MoveResult::Cancelled),
             Err(e) => return Ok(io_fail(&e, "hash source")),
         }
     } else {
@@ -1202,6 +1214,7 @@ mod tests {
             fail_fast: false,
             journal_dir: journal.to_path_buf(),
             cancel: CancelToken::new(),
+            allow_replace: false,
         }
     }
 
@@ -1302,5 +1315,101 @@ mod tests {
             );
             assert!(report.total(Outcome::Skipped) >= 1 || report.total(Outcome::NoOp) >= 1);
         }
+    }
+
+    #[test]
+    fn replace_without_flag_is_conflict_not_overwrite() {
+        // §5.6: `Replace` needs both the config setting *and* an explicit
+        // per-run flag. Config alone (as if from a file edited months ago)
+        // must never authorise an overwrite.
+        let media = TempDir::new().unwrap();
+        let journal = TempDir::new().unwrap();
+        std::fs::write(media.path().join("Inception.2010.mkv"), b"new-bytes").unwrap();
+        let dest_dir = media.path().join("Inception (2010)");
+        std::fs::create_dir(&dest_dir).unwrap();
+        let dest = dest_dir.join("Inception (2010).mkv");
+        std::fs::write(&dest, b"original-dest").unwrap();
+        let mut cfg = cfg_with(StrategyConfig::Native);
+        cfg.conflict.policy = mm_core::config::ConflictPolicy::Replace;
+        let fs = RealFs::new();
+        let planner = crate::Planner::new(&fs, media.path(), MediaKind::Movies, &cfg).unwrap();
+        let plan = planner.plan(Default::default()).unwrap();
+        let mut opts = exec_opts(journal.path());
+        opts.allow_replace = false;
+        let report = execute(&fs, &plan, &cfg, &opts);
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"original-dest",
+            "destination must not be replaced without the explicit flag"
+        );
+        assert!(media.path().join("Inception.2010.mkv").exists());
+        assert!(report.total(Outcome::Conflicted) >= 1, "{:?}", report.counts);
+    }
+
+    #[test]
+    fn replace_with_flag_replaces_destination() {
+        let media = TempDir::new().unwrap();
+        let journal = TempDir::new().unwrap();
+        std::fs::write(media.path().join("Inception.2010.mkv"), b"new-bytes").unwrap();
+        let dest_dir = media.path().join("Inception (2010)");
+        std::fs::create_dir(&dest_dir).unwrap();
+        let dest = dest_dir.join("Inception (2010).mkv");
+        std::fs::write(&dest, b"original-dest").unwrap();
+        let mut cfg = cfg_with(StrategyConfig::Native);
+        cfg.conflict.policy = mm_core::config::ConflictPolicy::Replace;
+        let fs = RealFs::new();
+        let planner = crate::Planner::new(&fs, media.path(), MediaKind::Movies, &cfg).unwrap();
+        let plan = planner.plan(Default::default()).unwrap();
+        let mut opts = exec_opts(journal.path());
+        opts.allow_replace = true;
+        let report = execute(&fs, &plan, &cfg, &opts);
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"new-bytes",
+            "destination must be replaced when explicitly allowed"
+        );
+        assert!(!media.path().join("Inception.2010.mkv").exists());
+        assert!(report.total(Outcome::Moved) >= 1, "{:?}", report.counts);
+    }
+
+    #[test]
+    fn replace_hash_cancel_reports_cancelled_not_failed() {
+        // Regression test: move_replace's source-hash step was missing the
+        // `Interrupted` arm that move_native/move_reserve both have, so a
+        // cancel during hashing was misreported as a per-item Failure.
+        use mm_core::fs::faulty::{Fault, FaultyFs, InjectErr, Method};
+
+        let media = TempDir::new().unwrap();
+        let journal = TempDir::new().unwrap();
+        std::fs::write(media.path().join("Inception.2010.mkv"), b"new-bytes").unwrap();
+        let dest_dir = media.path().join("Inception (2010)");
+        std::fs::create_dir(&dest_dir).unwrap();
+        let dest = dest_dir.join("Inception (2010).mkv");
+        std::fs::write(&dest, b"original-dest").unwrap();
+        let mut cfg = cfg_with(StrategyConfig::Native);
+        cfg.conflict.policy = mm_core::config::ConflictPolicy::Replace;
+        cfg.moves.verify = mm_core::config::VerifyMode::Hash;
+        let real = RealFs::new();
+        let planner = crate::Planner::new(&real, media.path(), MediaKind::Movies, &cfg).unwrap();
+        let plan = planner.plan(Default::default()).unwrap();
+        let fs = FaultyFs::with_faults(
+            real,
+            vec![Fault {
+                call_index: 1,
+                method: Method::Hash,
+                err: InjectErr::Interrupted,
+            }],
+        );
+        let mut opts = exec_opts(journal.path());
+        opts.allow_replace = true;
+        let report = execute(&fs, &plan, &cfg, &opts);
+        assert!(report.cancelled, "hash cancellation must set report.cancelled");
+        assert_eq!(
+            report.total(Outcome::Failed),
+            0,
+            "cancellation must not be reported as a Failure: {:?}",
+            report.counts
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), b"original-dest");
     }
 }

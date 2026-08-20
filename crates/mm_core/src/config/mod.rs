@@ -336,9 +336,11 @@ impl Config {
                 "min_confidence above High is impossible".into(),
             ));
         }
-        if self.conflict.policy == ConflictPolicy::Replace && !self.providers.enabled {
-            // Replace needs the flag at runtime; allowed at config level but warned.
-        }
+        // `ConflictPolicy::Replace` alone never authorises an overwrite (§5.6):
+        // the config setting is necessary but not sufficient. The other half
+        // of that gate is a per-invocation CLI flag (`organize --allow-replace`),
+        // enforced at execute time in `mm_engine::exec` — not here, and not by
+        // `providers.enabled`, which is an unrelated setting.
         Ok(())
     }
 

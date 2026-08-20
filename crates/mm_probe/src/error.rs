@@ -25,6 +25,16 @@ pub enum ProbeError {
     /// The file looked like a supported container but could not be parsed.
     #[error("failed to parse container {path}: {detail}")]
     Parse { path: PathBuf, detail: String },
+    /// Parsing did not finish within the wall-clock budget.
+    ///
+    /// A handful of malformed box/element size fields have been observed
+    /// driving the underlying pure-Rust parsers into unbounded loops (a
+    /// single corrupted byte in an ISO-BMFF `stsc` box size is enough to
+    /// spin `re_mp4` forever). Probing must never block the pipeline
+    /// indefinitely on one hostile or corrupt file, so the parse runs on a
+    /// watchdog and this variant is returned if the budget is exceeded.
+    #[error("probing {path} did not finish within {timeout_secs}s (corrupt or hostile container?)")]
+    Timeout { path: PathBuf, timeout_secs: u64 },
 }
 
 impl ProbeError {

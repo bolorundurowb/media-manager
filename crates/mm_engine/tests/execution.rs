@@ -28,6 +28,7 @@ fn exec_opts(journal: &Path) -> ExecOptions {
         fail_fast: false,
         journal_dir: journal.to_path_buf(),
         cancel: CancelToken::new(),
+        allow_replace: false,
     }
 }
 

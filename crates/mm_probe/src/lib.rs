@@ -9,6 +9,7 @@
 //! Colour/MasteringMetadata; `re_mp4` has no `colr`/`mdcv`). Do not invent HDR
 //! from the container; it remains filename-only.
 
+mod audio_tags;
 mod cache;
 mod error;
 mod mkv;
@@ -20,7 +21,9 @@ mod resolution;
 mod container_gen;
 
 use std::path::Path;
+use std::time::Duration;
 
+pub use audio_tags::{AudioProber, probe_audio_path};
 pub use cache::{CacheKey, ProbeCache};
 pub use error::ProbeError;
 pub use mkv::MatroskaProber;
@@ -116,6 +119,32 @@ pub(crate) fn extension_of(p: &Path) -> String {
     p.extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default()
+}
+
+/// Wall-clock budget for a single container parse. See [`ProbeError::Timeout`].
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Run `f` on a background thread and wait up to [`PROBE_TIMEOUT`], returning
+/// `None` on expiry.
+///
+/// `f` must be self-contained: it crosses a thread boundary and, if it never
+/// returns, the spawned thread is deliberately abandoned rather than joined
+/// (joining would defeat the point — a hung parser would hang the caller
+/// too). This trades a leaked, spinning thread on the rare
+/// corrupt/hostile-file path for never blocking the calling probe forever.
+pub(crate) fn run_with_timeout<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("mm_probe-guard".into())
+        .spawn(move || {
+            let _ = tx.send(f());
+        });
+    if spawned.is_err() {
+        // Could not spawn a thread at all (resource exhaustion) — treat the
+        // same as a timeout rather than panicking or blocking.
+        return None;
+    }
+    rx.recv_timeout(PROBE_TIMEOUT).ok()
 }
 
 /// Serde helper: `Option<Duration>` as optional nanoseconds.
@@ -280,6 +309,42 @@ mod tests {
                 error: ProbeError::Parse { .. },
             } => {}
             other => panic!("expected Failed parse, got {other:?}"),
+        }
+    }
+
+    /// A single corrupted-but-plausible box-size field (declared size larger
+    /// than the box's real content, still within the file) was found to
+    /// drive `re_mp4` into an unbounded 100%-CPU loop rather than returning
+    /// an error. `probe_path` must come back — bounded by [`PROBE_TIMEOUT`]
+    /// — with a `Failed` outcome, never hang the caller forever.
+    #[test]
+    fn corrupt_box_size_does_not_hang_the_prober() {
+        let mut bytes = minimal_mp4(1920, 1080, 1920, 1080);
+        let stsc_at = bytes
+            .windows(4)
+            .position(|w| w == b"stsc")
+            .expect("fixture contains an stsc box");
+        let size_at = stsc_at - 4;
+        let orig = u32::from_be_bytes(bytes[size_at..size_at + 4].try_into().unwrap());
+        // Grow the declared size past its real content without pointing
+        // past the end of the file — this is the shape that previously hung.
+        bytes[size_at..size_at + 4].copy_from_slice(&(orig + 17).to_be_bytes());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrupt_stsc.mp4");
+        fs::write(&path, &bytes).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path2 = path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(probe_path(&path2));
+        });
+        let outcome = rx
+            .recv_timeout(PROBE_TIMEOUT + std::time::Duration::from_secs(5))
+            .expect("probe_path must return, not hang, on a corrupt box size");
+        match outcome {
+            ProbeOutcome::Failed { .. } => {}
+            other => panic!("expected Failed for corrupt stsc size, got {other:?}"),
         }
     }
 

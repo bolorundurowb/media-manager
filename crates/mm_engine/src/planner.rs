@@ -74,8 +74,23 @@ impl<'a, F: FileSystem> Planner<'a, F> {
         })
     }
 
-    /// Run the full planning pipeline.
-    pub fn plan(&self, _opts: PlanOptions) -> Result<Plan, std::io::Error> {
+    /// Run the full planning pipeline, dispatching to the kind-specific
+    /// pipeline. Movies is implemented directly on `Planner` below (the
+    /// original Phase 2 pipeline); TV and Music each own a self-contained
+    /// pipeline in `crate::tv_plan` / `crate::music_plan` since their identity,
+    /// grouping, and routing rules genuinely differ from movies (§5.3, §5.5) —
+    /// forcing them through `PlanItemInternal`/`MovieId` would be a false
+    /// abstraction, not a simplification.
+    pub fn plan(&self, opts: PlanOptions) -> Result<Plan, std::io::Error> {
+        match self.kind {
+            MediaKind::Movies => self.plan_movies(opts),
+            MediaKind::Tv => crate::tv_plan::plan_tv(self, opts),
+            MediaKind::Music => crate::music_plan::plan_music(self, opts),
+        }
+    }
+
+    /// The movie planning pipeline (§5, Phase 2/3/4).
+    fn plan_movies(&self, _opts: PlanOptions) -> Result<Plan, std::io::Error> {
         let run_id = mm_core::plan::ItemId::new(0); // placeholder; real run_id comes from CLI
         let _ = run_id;
         let run_uuid = uuid::Uuid::new_v4();

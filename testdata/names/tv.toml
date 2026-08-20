@@ -1,0 +1,197 @@
+# Starter parser corpus for TV episodes (§11, §22.3, §3.2).
+# Modelled on testdata/names/movies.toml. >= 20 representative cases covering
+# single episode, multi-episode (all §3.2 forms), absolute-style NxNN,
+# specials, year-disambiguated shows, episode title present/absent, release
+# group, and resolution/source/codec tags.
+
+[[case]]
+name = "Show.Name.S01E02.1080p.WEB.x264-GROUP.mkv"
+title = "Show Name"
+season = 1
+episodes = [2]
+resolution = "1080p"
+video_codec = "x264"
+release_group = "GROUP"
+
+[[case]]
+name = "Show (2011) - S01E01 - Winter Is Coming - 1080p.mkv"
+title = "Show"
+year = 2011
+season = 1
+episodes = [1]
+episode_title = "Winter Is Coming"
+resolution = "1080p"
+
+[[case]]
+name = "Breaking.Bad.S05E14.Ozymandias.720p.BluRay.x264.mkv"
+title = "Breaking Bad"
+season = 5
+episodes = [14]
+episode_title = "Ozymandias"
+resolution = "720p"
+source = "BluRay"
+video_codec = "x264"
+
+[[case]]
+name = "Show.Name.S01E01E02.720p.HDTV.x264.mkv"
+title = "Show Name"
+season = 1
+episodes = [1, 2]
+resolution = "720p"
+source = "HDTV"
+
+[[case]]
+name = "Show.Name.S01E01-E02.720p.mkv"
+title = "Show Name"
+season = 1
+episodes = [1, 2]
+resolution = "720p"
+
+[[case]]
+name = "Show.Name.S01E01-02.720p.mkv"
+title = "Show Name"
+season = 1
+episodes = [1, 2]
+resolution = "720p"
+
+[[case]]
+name = "Show.Name.S02E05E06E07.mkv"
+title = "Show Name"
+season = 2
+episodes = [5, 6, 7]
+
+[[case]]
+name = "Show.Name.S01E01.&.S01E02.mkv"
+title = "Show Name"
+season = 1
+episodes = [1, 2]
+
+[[case]]
+name = "Show.Name.1x05.720p.mkv"
+title = "Show Name"
+season = 1
+episodes = [5]
+resolution = "720p"
+
+[[case]]
+name = "Show.Name.1x01x02.mkv"
+title = "Show Name"
+season = 1
+episodes = [1, 2]
+
+[[case]]
+name = "Show.Name.E01-E03.mkv"
+title = "Show Name"
+episodes = [1, 2, 3]
+
+[[case]]
+name = "Show.Name.S00E01.720p.mkv"
+title = "Show Name"
+season = 0
+episodes = [1]
+resolution = "720p"
+
+[[case]]
+name = "Show.Name.Special.05.mkv"
+title = "Show Name"
+season = 0
+episodes = [5]
+
+[[case]]
+name = "Show Name - Christmas Special.mkv"
+title = "Show Name"
+season = 0
+episode_title = "Christmas Special"
+
+[[case]]
+# NOTE: `DD5.1`'s internal dot is converted to a space by the (shared,
+# unmodified) tokeniser before vocab matching ever runs — same as movies'
+# corpus, which for the same reason never asserts `audio_format` on a
+# `DD5.1`-bearing case either (see `testdata/names/movies.toml`). So this
+# case intentionally does not assert `audio_format`.
+name = "The.Office.US.S03E01.Gay.Witch.Hunt.1080p.WEB-DL.DD5.1.H264.mkv"
+title = "The Office US"
+season = 3
+episodes = [1]
+episode_title = "Gay Witch Hunt"
+resolution = "1080p"
+source = "WEB-DL"
+
+[[case]]
+name = "Show.Name.S04E12.2160p.NF.WEB-DL.DDP5.1.HDR.HEVC-GRP.mkv"
+title = "Show Name"
+season = 4
+episodes = [12]
+resolution = "2160p"
+hdr = "HDR"
+video_codec = "HEVC"
+release_group = "GRP"
+
+[[case]]
+name = "Another Show (2015) - S02E03 - The Return.mkv"
+title = "Another Show"
+year = 2015
+season = 2
+episodes = [3]
+episode_title = "The Return"
+
+[[case]]
+name = "Yet Another Show (2009) S01E01.mkv"
+title = "Yet Another Show"
+year = 2009
+season = 1
+episodes = [1]
+
+[[case]]
+name = "Show.Name.S01E01.720p.x264.mkv"
+title = "Show Name"
+season = 1
+episodes = [1]
+resolution = "720p"
+video_codec = "x264"
+
+[[case]]
+name = "Show.Name.S06E10.Series.Finale.480p.DVDRip.XviD.mkv"
+title = "Show Name"
+season = 6
+episodes = [10]
+episode_title = "Series Finale"
+resolution = "480p"
+source = "DVDRip"
+video_codec = "XviD"
+
+[[case]]
+name = "Show.Name.S01E01-S01E02.mkv"
+title = "Show Name"
+season = 1
+episodes = [1, 2]
+
+[[case]]
+name = "Show.Name.S00E02.OVA.mkv"
+title = "Show Name"
+season = 0
+episodes = [2]
+
+[[case]]
+name = "Detective Show (2018) - S01E05 - The Long Con - REMUX.mkv"
+title = "Detective Show"
+year = 2018
+season = 1
+episodes = [5]
+episode_title = "The Long Con"
+source = "REMUX"
+
+[[case]]
+name = "Show_Name_S01E02_1080p.mkv"
+title = "Show Name"
+season = 1
+episodes = [2]
+resolution = "1080p"
+
+[[case]]
+name = "Show.Name.S01E02.2019.1080p.mkv"
+title = "Show Name"
+year = 2019
+season = 1
+episodes = [2]
+resolution = "1080p"

@@ -74,6 +74,10 @@ enum Commands {
         strict: bool,
         #[arg(long)]
         fail_fast: bool,
+        /// Explicit, per-run authorisation for `conflict.policy = "replace"`
+        /// (§5.6). The config setting alone never authorises an overwrite.
+        #[arg(long)]
+        allow_replace: bool,
     },
     /// Plan only: report pending work (exit 10 if changes are needed).
     Verify {
@@ -104,12 +108,16 @@ enum ConfigAction {
 #[derive(Clone, Copy, ValueEnum)]
 enum MediaTypeArg {
     Movies,
+    Tv,
+    Music,
 }
 
 impl From<MediaTypeArg> for MediaKind {
     fn from(a: MediaTypeArg) -> Self {
         match a {
             MediaTypeArg::Movies => MediaKind::Movies,
+            MediaTypeArg::Tv => MediaKind::Tv,
+            MediaTypeArg::Music => MediaKind::Music,
         }
     }
 }
@@ -145,8 +153,7 @@ fn run() -> Result<ExitCode> {
             output,
         } => {
             let cfg = Config::layered(Some(&dir), &overrides)?;
-            cmd_plan(&cfg, &dir, r#type.into(), cli.json, output)?;
-            Ok(ExitCode::SUCCESS)
+            cmd_plan(&cfg, &dir, r#type.into(), cli.json, output)
         }
         Commands::Organize {
             dir,
@@ -156,6 +163,7 @@ fn run() -> Result<ExitCode> {
             from_plan,
             strict,
             fail_fast,
+            allow_replace,
         } => {
             let cfg = Config::layered(Some(&dir), &overrides)?;
             cmd_organize(
@@ -167,6 +175,7 @@ fn run() -> Result<ExitCode> {
                 from_plan,
                 strict,
                 fail_fast,
+                allow_replace,
                 cli.json,
             )
         }
@@ -226,7 +235,7 @@ fn cmd_plan(
     kind: MediaKind,
     json: bool,
     output: Option<PathBuf>,
-) -> Result<()> {
+) -> Result<ExitCode> {
     ensure_dir(dir)?;
     let fs = RealFs::new();
     let planner = Planner::new(&fs, dir, kind, _cfg)?;
@@ -241,7 +250,12 @@ fn cmd_plan(
     } else {
         println!("{}", render_text(&plan, true));
     }
-    Ok(())
+    // §8 exit codes: `plan` is one of the two "verify/plan only" commands
+    // where pending-but-unapplied work is distinguished (exit 10) from an
+    // already-organised library (exit 0); conflicts/duplicates/review items
+    // take precedence over that per the stated precedence rule.
+    let report = report_from_plan(&plan, RunMode::Plan);
+    Ok(ExitCode::from(report.exit_code(false)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -254,6 +268,7 @@ fn cmd_organize(
     from_plan: Option<PathBuf>,
     strict: bool,
     fail_fast: bool,
+    allow_replace: bool,
     json: bool,
 ) -> Result<ExitCode> {
     ensure_dir(dir)?;
@@ -292,6 +307,7 @@ fn cmd_organize(
         fail_fast,
         journal_dir,
         cancel: CancelToken::new(),
+        allow_replace,
     };
     let report = execute(&fs, &plan, cfg, &opts);
     print_report(&report, json);
