@@ -2,7 +2,8 @@
 //! `parse_episode`, `identity_key` and `version_label` only.
 
 use media_manager::parse::{
-    identity_key, parse_episode, parse_media_name, version_label, LibraryKind, ParseError,
+    bare_season_folder, identity_key, parse_episode, parse_media_name, version_label,
+    LibraryKind, ParseError,
 };
 
 mod movies {
@@ -307,6 +308,48 @@ mod tv {
         let p = parse_media_name("S.W.A.T. - Season 1 S01", LibraryKind::Tv).unwrap();
         assert_eq!(p.title, "S W A T");
         assert_eq!(p.season, Some(1));
+    }
+
+    #[test]
+    fn season_range_is_dropped_not_kept_as_title_or_season() {
+        // A multi-season pack container names a range, not one season; the
+        // range must not leak into the title, and (being ambiguous) must not
+        // be reported as a single season either.
+        let p = parse_media_name(
+            "Ben 10 (2005) Season 1-4 S01-S04 (1080p WEB-DL x265 HEVC 10bit AAC 2.0 RCVR) [UTR]",
+            LibraryKind::Movies,
+        )
+        .unwrap();
+        assert_eq!(p.title, "Ben 10");
+        assert_eq!(p.year, Some(2005));
+        assert_eq!(p.resolution.as_deref(), Some("1080p"));
+
+        let err = parse_media_name(
+            "Ben 10 (2005) Season 1-4 S01-S04 (1080p WEB-DL x265 HEVC 10bit AAC 2.0 RCVR) [UTR]",
+            LibraryKind::Tv,
+        )
+        .unwrap_err();
+        assert_eq!(err, ParseError::MissingSeason);
+
+        let p = parse_media_name(
+            "Phineas and Ferb (2007) Season 1-4 (1080p WEB-DL x265 HEVC 10bit AAC 2.0 RCVR) [UTR]",
+            LibraryKind::Movies,
+        )
+        .unwrap();
+        assert_eq!(p.title, "Phineas and Ferb");
+        assert_eq!(p.year, Some(2007));
+    }
+
+    #[test]
+    fn bare_season_folder_recognises_common_forms() {
+        assert_eq!(bare_season_folder("Season 1"), Some(1));
+        assert_eq!(bare_season_folder("Season 01"), Some(1));
+        assert_eq!(bare_season_folder("S01"), Some(1));
+        assert_eq!(bare_season_folder("Specials"), Some(0));
+        assert_eq!(bare_season_folder("Special"), Some(0));
+        assert_eq!(bare_season_folder("Extras"), None);
+        assert_eq!(bare_season_folder("Season 1-4"), None);
+        assert_eq!(bare_season_folder("Narcos Season 1"), None);
     }
 }
 

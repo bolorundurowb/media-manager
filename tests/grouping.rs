@@ -14,6 +14,16 @@ fn folder(name: &str) -> MediaFolder {
     }
 }
 
+/// A subfolder nested one level under `parent`, e.g. a `Season 1/` directory
+/// inside a season-pack release container.
+fn nested_folder(parent: &str, leaf: &str) -> MediaFolder {
+    MediaFolder {
+        path: PathBuf::from(parent).join(leaf),
+        videos: Vec::new(),
+        loose: false,
+    }
+}
+
 #[test]
 fn movies_merge_versions_and_separate_years() {
     let folders = vec![
@@ -158,6 +168,53 @@ fn tv_skips_folder_without_season() {
     let (outcome, skipped) = group_folders(LibraryKind::Tv, folders);
     assert_eq!(skipped.len(), 1);
 
+    let GroupOutcome::Tv(groups) = outcome else {
+        panic!("expected tv groups");
+    };
+    assert!(groups.is_empty());
+}
+
+#[test]
+fn tv_resolves_season_subfolders_under_a_titled_container() {
+    // Common season-pack layout: the title/year live on the container
+    // folder, each season is split into its own bare "Season N" subfolder,
+    // and "Extras" has no season and should still be skipped.
+    let container = "Ben 10 (2005) Season 1-4 S01-S04 (1080p WEB-DL x265 HEVC 10bit AAC 2.0 RCVR) [UTR]";
+    let folders = vec![
+        nested_folder(container, "Season 1"),
+        nested_folder(container, "Season 2"),
+        nested_folder(container, "Season 3"),
+        nested_folder(container, "Season 4"),
+        nested_folder(container, "Extras"),
+    ];
+
+    let (outcome, skipped) = group_folders(LibraryKind::Tv, folders);
+    assert_eq!(skipped.len(), 1, "unexpected skips: {skipped:?}");
+    assert!(skipped[0].path.ends_with("Extras"));
+    assert_eq!(skipped[0].reason, "no parseable season number");
+
+    let GroupOutcome::Tv(groups) = outcome else {
+        panic!("expected tv groups");
+    };
+    assert_eq!(groups.len(), 1);
+    let ben10 = &groups[0];
+    assert_eq!(ben10.title, "Ben 10");
+    assert_eq!(ben10.year, Some(2005));
+    assert_eq!(ben10.seasons.len(), 4);
+    for s in 1..=4u8 {
+        assert!(ben10.seasons.contains_key(&s), "missing season {s}");
+    }
+}
+
+#[test]
+fn tv_bare_season_folder_without_a_parseable_parent_is_skipped() {
+    // If the parent directory's own name doesn't parse into a title (empty
+    // or otherwise unusable), a bare "Season 1" leaf still has nowhere to
+    // borrow a title from and must be skipped rather than guessed at.
+    let folders = vec![nested_folder("", "Season 1")];
+
+    let (outcome, skipped) = group_folders(LibraryKind::Tv, folders);
+    assert_eq!(skipped.len(), 1);
     let GroupOutcome::Tv(groups) = outcome else {
         panic!("expected tv groups");
     };

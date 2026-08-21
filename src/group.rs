@@ -1,6 +1,8 @@
 //! Group parsed media folders by movie / show identity.
 
-use crate::parse::{identity_key, parse_media_name, LibraryKind, ParseError, ParsedName};
+use crate::parse::{
+    bare_season_folder, identity_key, parse_media_name, LibraryKind, ParseError, ParsedName,
+};
 use crate::scan::MediaFolder;
 use std::collections::BTreeMap;
 
@@ -63,6 +65,18 @@ pub(crate) fn parse_folders(
 
         match parse_media_name(&name, kind) {
             Ok(p) => parsed.push(ParsedFolder { folder, parsed: p }),
+            Err(ParseError::EmptyTitle) if kind == LibraryKind::Tv => {
+                match parse_bare_season_subfolder(&folder, &name) {
+                    Some(p) => parsed.push(ParsedFolder { folder, parsed: p }),
+                    None => {
+                        tracing::warn!(path = %folder.path.display(), "no parseable title; skipping");
+                        skipped.push(SkippedFolder {
+                            path: folder.path,
+                            reason: ParseError::EmptyTitle.to_string(),
+                        });
+                    }
+                }
+            }
             Err(ParseError::MissingSeason) if kind == LibraryKind::Tv => {
                 tracing::warn!(path = %folder.path.display(), "no season number; skipping");
                 skipped.push(SkippedFolder {
@@ -81,6 +95,33 @@ pub(crate) fn parse_folders(
     }
 
     (parsed, skipped)
+}
+
+/// A subfolder whose own name is nothing but a bare season indicator
+/// ("Season 1", "S01", "Specials") has no title of its own to parse.
+/// Release packs commonly nest these directly under a container that *does*
+/// carry the show's title and year (and often a season range, e.g. "Show
+/// Name (2005) Season 1-4 S01-S04 (1080p ...)"), one level up:
+///
+/// ```text
+/// Show Name (2005) Season 1-4 S01-S04 (1080p WEB-DL ...) [UTR]/
+///   Season 1/
+///   Season 2/
+///   Extras/
+/// ```
+///
+/// Borrow the title/year from the parent directory and combine it with the
+/// season this subfolder names. The parent is parsed in `Movies` mode
+/// because it carries no reliable *single* season of its own (it's often a
+/// range) — only a title and year are taken from it. Returns `None` when
+/// the leaf isn't a bare season indicator, the parent path/name is
+/// unavailable, or the parent's own name doesn't parse into a title.
+fn parse_bare_season_subfolder(folder: &MediaFolder, leaf_name: &str) -> Option<ParsedName> {
+    let season = bare_season_folder(leaf_name)?;
+    let parent_name = folder.path.parent()?.file_name()?.to_str()?;
+    let mut parsed = parse_media_name(parent_name, LibraryKind::Movies).ok()?;
+    parsed.season = Some(season);
+    Some(parsed)
 }
 
 /// Group already-parsed folders globally so versions/seasons discovered by

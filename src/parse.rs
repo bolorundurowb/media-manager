@@ -420,6 +420,39 @@ fn parse_season_token(tok: &str) -> Option<u8> {
     cap.get(1)?.as_str().parse().ok()
 }
 
+/// Bare numeric range following the word "season" (`Season 1-4`). Unlike a
+/// single `Season 5`, a range doesn't identify one season, so it is dropped
+/// as noise rather than parsed into `ParsedName::season`.
+fn season_range_word_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^\d{1,3}-\d{1,3}$").expect("season range word regex"))
+}
+
+/// Bare `SxxSyy`-style range token (`S01-S04`, `S1-S4`), as opposed to
+/// `season_token_re`'s `SxxExx` episode form. Also dropped as noise.
+fn season_range_token_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)^s\d{1,3}-s?\d{1,3}$").expect("season range token regex"))
+}
+
+/// A directory whose entire name is a bare season indicator (`Season 1`,
+/// `Season 01`, `S01`, `Specials`/`Special` → season 0) and nothing else.
+/// Used for release packs laid out as `Show Name (Year) Season 1-4/Season
+/// 1/`, `.../Season 2/`, ..., where the title lives on the container
+/// directory and each subfolder is only the season split out.
+pub fn bare_season_folder(name: &str) -> Option<u8> {
+    let unified = unify_separators(name);
+    let trimmed = unified.trim();
+    if trimmed.eq_ignore_ascii_case("specials") || trimmed.eq_ignore_ascii_case("special") {
+        return Some(0);
+    }
+    match trimmed.split_whitespace().collect::<Vec<_>>().as_slice() {
+        [word, num] if word.eq_ignore_ascii_case("season") => num.parse::<u8>().ok(),
+        [tok] => parse_season_token(tok),
+        _ => None,
+    }
+}
+
 fn apply_tag_blob(
     blob: &str,
     resolution: &mut Option<String>,
@@ -481,6 +514,25 @@ pub fn parse_media_name(raw: &str, kind: LibraryKind) -> Result<ParsedName, Pars
 
     while i < tokens.len() {
         let tok = tokens[i];
+
+        // Season *ranges* ("Season 1-4", "S01-S04") describe a pack spanning
+        // several seasons, not one; they carry no single season number worth
+        // keeping, so they're dropped as noise in both movie and TV parsing
+        // (a single "Season 5" is still handled per-kind below).
+        if tok.eq_ignore_ascii_case("season") {
+            if let Some(next) = tokens.get(i + 1) {
+                if season_range_word_re().is_match(next) {
+                    in_tags = true;
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        if season_range_token_re().is_match(tok) {
+            in_tags = true;
+            i += 1;
+            continue;
+        }
 
         // Season tokens only make sense in TV mode.
         if kind == LibraryKind::Tv {

@@ -105,7 +105,17 @@ fn os_rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 
     fn wide(path: &Path) -> Vec<u16> {
-        path.as_os_str()
+        // `std::fs` transparently prefixes well-formed absolute paths with
+        // the extended-length `\\?\` marker so ordinary calls (`rename`,
+        // `create_dir_all`, `read_dir`, ...) aren't limited to `MAX_PATH`
+        // (260 chars). Scene-release folder/file names routinely produce
+        // source paths past that once nested under a season-pack container,
+        // so this raw `MoveFileExW` FFI call — which bypasses `std::fs`
+        // entirely to get no-replace semantics — has to do the same
+        // conversion itself, or long moves fail with `ERROR_PATH_NOT_FOUND`
+        // (os error 3) even though the file plainly exists.
+        to_verbatim(path)
+            .as_os_str()
             .encode_wide()
             .chain(std::iter::once(0))
             .collect()
@@ -120,6 +130,46 @@ fn os_rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
+    }
+}
+
+/// Prefix an absolute Windows path with the extended-length (`\\?\`) marker,
+/// enabling paths well past `MAX_PATH` (260 chars) for raw Win32 calls that
+/// don't already go through `std::fs`'s own long-path handling.
+///
+/// Left unchanged (and simply passed through to the OS, which will reject
+/// it if too long) when the path is already verbatim, isn't drive-absolute
+/// or UNC, or contains `.`/`..` components — verbatim paths are used
+/// exactly as given with no normalization, so only paths `std::fs` would
+/// already consider "safe to verbatim-ify" are converted here.
+#[cfg(windows)]
+fn to_verbatim(path: &Path) -> std::path::PathBuf {
+    use std::path::{Component, Prefix};
+
+    let text = path.to_string_lossy();
+    if text.starts_with(r"\\?\") {
+        return path.to_path_buf();
+    }
+    if path
+        .components()
+        .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
+    {
+        return path.to_path_buf();
+    }
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(_) => std::path::PathBuf::from(format!(r"\\?\{text}")),
+            // `\\server\share\...` -> `\\?\UNC\server\share\...`. Built by
+            // string surgery rather than recombining `Component`s: pushing a
+            // rooted-but-unprefixed fragment onto a `PathBuf` replaces the
+            // whole thing instead of appending, per `PathBuf::push`'s rules.
+            Prefix::UNC(..) => match text.strip_prefix(r"\\") {
+                Some(rest) => std::path::PathBuf::from(format!(r"\\?\UNC\{rest}")),
+                None => path.to_path_buf(),
+            },
+            _ => path.to_path_buf(),
+        },
+        _ => path.to_path_buf(),
     }
 }
 
@@ -264,6 +314,63 @@ mod tests {
             })
             .collect();
         assert!(leftovers.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn to_verbatim_prefixes_drive_absolute_paths() {
+        let p = to_verbatim(Path::new(r"C:\Users\a\b.mkv"));
+        assert_eq!(p, std::path::PathBuf::from(r"\\?\C:\Users\a\b.mkv"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn to_verbatim_prefixes_unc_paths() {
+        let p = to_verbatim(Path::new(r"\\server\share\folder\file.mkv"));
+        assert_eq!(
+            p,
+            std::path::PathBuf::from(r"\\?\UNC\server\share\folder\file.mkv")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn to_verbatim_leaves_already_verbatim_paths_alone() {
+        let p = to_verbatim(Path::new(r"\\?\C:\already\verbatim.mkv"));
+        assert_eq!(p, std::path::PathBuf::from(r"\\?\C:\already\verbatim.mkv"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn to_verbatim_skips_paths_needing_normalization() {
+        // `.`/`..` components must be resolved before a path can safely be
+        // used verbatim; leave those to the OS instead of guessing.
+        let p = to_verbatim(Path::new(r"C:\Users\a\..\b.mkv"));
+        assert_eq!(p, std::path::PathBuf::from(r"C:\Users\a\..\b.mkv"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn real_fs_rename_succeeds_past_max_path() {
+        // Regression test for the exact failure reported in production:
+        // scene-release folder names routinely produce source paths well
+        // past Windows' 260-char `MAX_PATH`, and the raw `MoveFileExW` FFI
+        // call used for no-replace semantics fails with
+        // `ERROR_PATH_NOT_FOUND` unless it verbatim-prefixes long paths the
+        // same way `std::fs` already does for everything else.
+        let dir = temp_dir();
+        let long_component = "x".repeat(120);
+        let nested = dir.join(&long_component).join(&long_component);
+        fs::create_dir_all(&nested).unwrap();
+        let from = nested.join("a.mkv");
+        fs::write(&from, b"aaa").unwrap();
+        assert!(from.as_os_str().len() > 260, "test setup must exceed MAX_PATH");
+
+        let to = nested.join("b.mkv");
+        rename_no_replace(&from, &to).unwrap();
+        assert!(!from.exists());
+        assert_eq!(fs::read(&to).unwrap(), b"aaa");
         let _ = fs::remove_dir_all(&dir);
     }
 }
