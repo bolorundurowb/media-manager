@@ -179,7 +179,8 @@ fn tv_resolves_season_subfolders_under_a_titled_container() {
     // Common season-pack layout: the title/year live on the container
     // folder, each season is split into its own bare "Season N" subfolder,
     // and "Extras" has no season and should still be skipped.
-    let container = "Ben 10 (2005) Season 1-4 S01-S04 (1080p WEB-DL x265 HEVC 10bit AAC 2.0 RCVR) [UTR]";
+    let container =
+        "Ben 10 (2005) Season 1-4 S01-S04 (1080p WEB-DL x265 HEVC 10bit AAC 2.0 RCVR) [UTR]";
     let folders = vec![
         nested_folder(container, "Season 1"),
         nested_folder(container, "Season 2"),

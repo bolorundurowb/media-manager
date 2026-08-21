@@ -365,7 +365,10 @@ mod tests {
         fs::create_dir_all(&nested).unwrap();
         let from = nested.join("a.mkv");
         fs::write(&from, b"aaa").unwrap();
-        assert!(from.as_os_str().len() > 260, "test setup must exceed MAX_PATH");
+        assert!(
+            from.as_os_str().len() > 260,
+            "test setup must exceed MAX_PATH"
+        );
 
         let to = nested.join("b.mkv");
         rename_no_replace(&from, &to).unwrap();

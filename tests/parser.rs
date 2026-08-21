@@ -2,8 +2,8 @@
 //! `parse_episode`, `identity_key` and `version_label` only.
 
 use media_manager::parse::{
-    bare_season_folder, identity_key, parse_episode, parse_media_name, version_label,
-    LibraryKind, ParseError,
+    bare_season_folder, identity_key, parse_episode, parse_media_name, version_label, LibraryKind,
+    ParseError,
 };
 
 mod movies {
@@ -267,7 +267,8 @@ mod tv {
 
     #[test]
     fn strips_other_tracker_watermarks() {
-        let p = parse_media_name("YTS.MX - Some Movie (2020) [1080p]", LibraryKind::Movies).unwrap();
+        let p =
+            parse_media_name("YTS.MX - Some Movie (2020) [1080p]", LibraryKind::Movies).unwrap();
         assert_eq!(p.title, "Some Movie");
         assert_eq!(p.year, Some(2020));
 

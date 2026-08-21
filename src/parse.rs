@@ -270,7 +270,10 @@ fn site_prefix_re() -> &'static Regex {
 pub fn strip_release_site_prefix(raw: &str) -> &str {
     match site_prefix_re().captures(raw) {
         Some(caps) => {
-            let rest = caps.get(1).expect("group 1 always present on match").as_str();
+            let rest = caps
+                .get(1)
+                .expect("group 1 always present on match")
+                .as_str();
             if rest.trim().is_empty() {
                 raw
             } else {
