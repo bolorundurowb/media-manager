@@ -240,6 +240,47 @@ fn channel_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?i)^\d\.\d$").expect("channel regex"))
 }
 
+/// Matches a leading tracker/indexer watermark: a domain-like token
+/// (`www.UIndex.org`, `YTS.MX`, `1337x.to`, ...) followed by a dash
+/// separator that is surrounded by real whitespace on both sides. Captures
+/// everything after the separator.
+///
+/// Two things distinguish a genuine site watermark from an ordinary dotted
+/// release name (`Onward.2020.2160p.HDR.WEB-DL...`) or a title with periods
+/// in it (`Mr. Robot`, `S.W.A.T.`):
+/// - every dot in the domain segment must be immediately followed by a
+///   letter/digit, never by whitespace (rules out sentence-style periods);
+/// - the dash must have at least one space on each side, and domain
+///   segments cannot themselves contain a dash (rules out glued release
+///   tags like `WEB-DL` or `x264-GROUP`, which are never space-separated).
+fn site_prefix_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)^[a-z0-9]+(?:\.[a-z0-9]+)*\.[a-z]{2,}\s+[-–—]+\s+(.+)$")
+            .expect("site prefix regex")
+    })
+}
+
+/// Strip a leading tracker/indexer watermark (e.g. `www.UIndex.org - `,
+/// `YTS.MX - `) from a raw release name. Only strips when the leading token
+/// looks like a domain name and the remainder after the dash is non-empty;
+/// otherwise the input is returned unchanged. Must run before
+/// `unify_separators`, which would otherwise turn the domain's dots into
+/// spaces and hide the pattern.
+pub fn strip_release_site_prefix(raw: &str) -> &str {
+    match site_prefix_re().captures(raw) {
+        Some(caps) => {
+            let rest = caps.get(1).expect("group 1 always present on match").as_str();
+            if rest.trim().is_empty() {
+                raw
+            } else {
+                rest
+            }
+        }
+        None => raw,
+    }
+}
+
 /// Peel `(...)` and `[...]` groups. A parenthesised year is preferred over a
 /// bracketed one; everything else becomes a tag for `apply_tag_blob`.
 fn peel_groups(s: &str) -> (String, Option<u16>, Vec<String>) {
@@ -413,6 +454,7 @@ fn apply_tag_blob(
 
 pub fn parse_media_name(raw: &str, kind: LibraryKind) -> Result<ParsedName, ParseError> {
     let raw = strip_extension(raw);
+    let raw = strip_release_site_prefix(raw);
     let (core, mut year, tags) = peel_groups(&unify_separators(raw));
     let mut resolution = None;
     let mut source = None;

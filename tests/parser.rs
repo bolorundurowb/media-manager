@@ -243,6 +243,71 @@ mod tv {
             other => panic!("unexpected {other:?}"),
         }
     }
+
+    #[test]
+    fn strips_tracker_site_watermark_prefix() {
+        let p = parse_media_name(
+            "www.UIndex.org    -    Phineas and Ferb S05E14 Agent T For Teen 1080p DSNP WEB-DL DDP5 1 H 264-NTb",
+            LibraryKind::Tv,
+        )
+        .unwrap();
+        assert_eq!(p.title, "Phineas and Ferb");
+        assert_eq!(p.season, Some(5));
+        assert_eq!(p.resolution.as_deref(), Some("1080p"));
+
+        let p2 = parse_media_name(
+            "www.UIndex.org    -    Teen Titans Go! S09E37 Task Force X 1080p iT WEB-DL AAC2 0 H 264-NTb",
+            LibraryKind::Tv,
+        )
+        .unwrap();
+        assert_eq!(p2.title, "Teen Titans Go!");
+        assert_eq!(p2.season, Some(9));
+    }
+
+    #[test]
+    fn strips_other_tracker_watermarks() {
+        let p = parse_media_name("YTS.MX - Some Movie (2020) [1080p]", LibraryKind::Movies).unwrap();
+        assert_eq!(p.title, "Some Movie");
+        assert_eq!(p.year, Some(2020));
+
+        let p = parse_media_name("1337x.to - Show.Name.S01E01.720p", LibraryKind::Tv).unwrap();
+        assert_eq!(p.title, "Show Name");
+        assert_eq!(p.season, Some(1));
+    }
+
+    #[test]
+    fn dotted_name_with_hyphenated_release_group_is_not_mistaken_for_a_site_prefix() {
+        let p = parse_media_name(
+            "Phineas.and.Ferb.S05E08.1080p.WEB.h264-DOLORES",
+            LibraryKind::Tv,
+        )
+        .unwrap();
+        assert_eq!(p.title, "Phineas and Ferb");
+        assert_eq!(p.season, Some(5));
+    }
+
+    #[test]
+    fn glued_release_tags_are_not_mistaken_for_a_site_prefix() {
+        // Onward.2020...WEB-DL...HEVC-EVO[TGx] has no real whitespace and a
+        // dash glued to a codec/group tag; must not be stripped.
+        let p = parse_media_name(
+            "Onward.2020.2160p.HDR.WEB-DL.DD5.1.HEVC-EVO[TGx].S01E01",
+            LibraryKind::Tv,
+        )
+        .unwrap();
+        assert_eq!(p.title, "Onward");
+    }
+
+    #[test]
+    fn dashed_title_without_a_domain_prefix_is_untouched() {
+        // Dots here are ordinary punctuation (each followed by whitespace or
+        // another letter with no domain-like TLD), so the leading "S W A T"
+        // must survive as the title rather than being stripped as a site
+        // watermark.
+        let p = parse_media_name("S.W.A.T. - Season 1 S01", LibraryKind::Tv).unwrap();
+        assert_eq!(p.title, "S W A T");
+        assert_eq!(p.season, Some(1));
+    }
 }
 
 #[test]
