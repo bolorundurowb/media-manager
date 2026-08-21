@@ -20,17 +20,17 @@ required-features = ["gui"]
 gui = ["dep:eframe", "dep:egui", "dep:rfd"]
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
-ctrlc = "3.4"
-regex = "1.11"
-tracing = "0.1"
-unicode-normalization = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.6.6", features = ["derive"] }
+ctrlc = "3.5.2"
+regex = "1.13.1"
+tracing = "0.1.44"
+unicode-normalization = "0.1.25"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # GUI (Phase 7), behind the `gui` feature.
-eframe = { version = "0.28", optional = true }
-egui = { version = "0.28", optional = true }
-rfd = { version = "0.14", optional = true }
+eframe = { version = "0.36.1", optional = true }
+egui = { version = "0.36.1", optional = true }
+rfd = { version = "0.17.2", optional = true }
 rayon = "1.12.0"
 
 [target.'cfg(unix)'.dependencies]

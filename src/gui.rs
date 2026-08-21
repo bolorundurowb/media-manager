@@ -335,141 +335,135 @@ fn format_event(event: &LogEvent) -> String {
 }
 
 impl eframe::App for GuiApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
         if self.run.is_some() {
-            ctx.request_repaint();
+            ui.ctx().request_repaint();
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let running = self.run.is_some();
-            ui.heading("media-manager");
+        let running = self.run.is_some();
+        ui.heading("media-manager");
 
-            ui.horizontal(|ui| {
-                ui.label("Source:");
-                let response =
-                    ui.add_enabled(!running, egui::TextEdit::singleline(&mut self.source));
-                if !running && response.lost_focus() {
-                    self.refresh_children();
-                }
-                if ui
-                    .add_enabled(!running, egui::Button::new("Browse…"))
-                    .clicked()
-                {
-                    self.browse_source();
-                }
-            });
-
-            ui.horizontal(|ui| {
-                ui.label("Dest (optional):");
-                ui.add_enabled(!running, egui::TextEdit::singleline(&mut self.dest));
-                if ui
-                    .add_enabled(!running, egui::Button::new("Browse…"))
-                    .clicked()
-                {
-                    self.browse_dest();
-                }
-            });
-            ui.small("Leave dest empty to organise in place, same as the CLI.");
-
-            if let Some(error) = &self.error {
-                ui.colored_label(egui::Color32::RED, error.as_str());
+        ui.horizontal(|ui| {
+            ui.label("Source:");
+            let response = ui.add_enabled(!running, egui::TextEdit::singleline(&mut self.source));
+            if !running && response.lost_focus() {
+                self.refresh_children();
             }
+            if ui
+                .add_enabled(!running, egui::Button::new("Browse…"))
+                .clicked()
+            {
+                self.browse_source();
+            }
+        });
 
-            ui.separator();
-            ui.label("Children (select rows, then assign):");
-            let children = self.children.clone();
-            egui::ScrollArea::vertical()
-                .max_height(220.0)
-                .id_source("children")
-                .show(ui, |ui| {
-                    for child in &children {
-                        let assignment = *self
-                            .assignments
-                            .get(child)
-                            .unwrap_or(&Assignment::Unassigned);
-                        let is_selected = self.selected.contains(child);
-                        let name = child
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| child.display().to_string());
-                        let text = format!("{name}  [{}]", assignment.label());
-                        if ui
-                            .add_enabled(
-                                !running,
-                                egui::SelectableLabel::new(is_selected, text),
-                            )
-                            .clicked()
-                        {
-                            if is_selected {
-                                self.selected.retain(|p| p != child);
-                            } else {
-                                self.selected.push(child.clone());
-                            }
+        ui.horizontal(|ui| {
+            ui.label("Dest (optional):");
+            ui.add_enabled(!running, egui::TextEdit::singleline(&mut self.dest));
+            if ui
+                .add_enabled(!running, egui::Button::new("Browse…"))
+                .clicked()
+            {
+                self.browse_dest();
+            }
+        });
+        ui.small("Leave dest empty to organise in place, same as the CLI.");
+
+        if let Some(error) = &self.error {
+            ui.colored_label(egui::Color32::RED, error.as_str());
+        }
+
+        ui.separator();
+        ui.label("Children (select rows, then assign):");
+        let children = self.children.clone();
+        egui::ScrollArea::vertical()
+            .max_height(220.0)
+            .id_salt("children")
+            .show(ui, |ui| {
+                for child in &children {
+                    let assignment = *self
+                        .assignments
+                        .get(child)
+                        .unwrap_or(&Assignment::Unassigned);
+                    let is_selected = self.selected.contains(child);
+                    let name = child
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| child.display().to_string());
+                    let text = format!("{name}  [{}]", assignment.label());
+                    if ui
+                        .add_enabled(!running, egui::Button::selectable(is_selected, text))
+                        .clicked()
+                    {
+                        if is_selected {
+                            self.selected.retain(|p| p != child);
+                        } else {
+                            self.selected.push(child.clone());
                         }
                     }
-                });
+                }
+            });
 
+        ui.horizontal(|ui| {
+            let has_selection = !self.selected.is_empty() && !running;
+            if ui
+                .add_enabled(has_selection, egui::Button::new("Mark as Movies"))
+                .clicked()
+            {
+                self.mark_selected(Assignment::Movies);
+            }
+            if ui
+                .add_enabled(has_selection, egui::Button::new("Mark as TV"))
+                .clicked()
+            {
+                self.mark_selected(Assignment::Tv);
+            }
+            if ui
+                .add_enabled(has_selection, egui::Button::new("Clear"))
+                .clicked()
+            {
+                self.mark_selected(Assignment::Unassigned);
+            }
+        });
+
+        ui.separator();
+        ui.add_enabled_ui(!running, |ui| {
             ui.horizontal(|ui| {
-                let has_selection = !self.selected.is_empty() && !running;
-                if ui
-                    .add_enabled(has_selection, egui::Button::new("Mark as Movies"))
-                    .clicked()
-                {
-                    self.mark_selected(Assignment::Movies);
-                }
-                if ui
-                    .add_enabled(has_selection, egui::Button::new("Mark as TV"))
-                    .clicked()
-                {
-                    self.mark_selected(Assignment::Tv);
-                }
-                if ui
-                    .add_enabled(has_selection, egui::Button::new("Clear"))
-                    .clicked()
-                {
-                    self.mark_selected(Assignment::Unassigned);
-                }
+                ui.radio_value(&mut self.apply, false, "Dry-run");
+                ui.radio_value(&mut self.apply, true, "Apply");
             });
+        });
 
-            ui.separator();
-            ui.add_enabled_ui(!running, |ui| {
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.apply, false, "Dry-run");
-                    ui.radio_value(&mut self.apply, true, "Apply");
-                });
-            });
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(self.can_start() && !running, egui::Button::new("Start"))
+                .clicked()
+            {
+                self.start();
+            }
+            if ui.add_enabled(running, egui::Button::new("Stop")).clicked() {
+                self.stop();
+            }
+            ui.label(format!("Status: {}", self.status.label()));
+        });
 
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(self.can_start() && !running, egui::Button::new("Start"))
-                    .clicked()
-                {
-                    self.start();
-                }
-                if ui.add_enabled(running, egui::Button::new("Stop")).clicked() {
-                    self.stop();
-                }
-                ui.label(format!("Status: {}", self.status.label()));
-            });
-
-            if let Some((moved, merged, skipped, failed, cancelled)) = self.last_summary {
-                ui.label(format!(
+        if let Some((moved, merged, skipped, failed, cancelled)) = self.last_summary {
+            ui.label(format!(
                     "moved={moved} merged={merged} skipped={skipped} failed={failed} cancelled={cancelled}"
                 ));
-            }
+        }
 
-            ui.separator();
-            ui.label("Log:");
-            egui::ScrollArea::vertical()
-                .max_height(240.0)
-                .id_source("log")
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    for line in &self.log {
-                        ui.monospace(line);
-                    }
-                });
-        });
+        ui.separator();
+        ui.label("Log:");
+        egui::ScrollArea::vertical()
+            .max_height(240.0)
+            .id_salt("log")
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                for line in &self.log {
+                    ui.monospace(line);
+                }
+            });
     }
 }
