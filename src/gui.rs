@@ -57,6 +57,10 @@ impl Status {
             Status::Failed => "Failed",
         }
     }
+
+    fn is_running(self) -> bool {
+        matches!(self, Status::Scanning | Status::Planning | Status::Applying)
+    }
 }
 
 struct RunHandle {
@@ -98,6 +102,19 @@ impl Default for GuiApp {
 }
 
 impl GuiApp {
+    fn assignment_counts(&self) -> (usize, usize, usize) {
+        self.assignments
+            .values()
+            .fold(
+                (0, 0, 0),
+                |(movies, tv, unassigned), assignment| match assignment {
+                    Assignment::Movies => (movies + 1, tv, unassigned),
+                    Assignment::Tv => (movies, tv + 1, unassigned),
+                    Assignment::Unassigned => (movies, tv, unassigned + 1),
+                },
+            )
+    }
+
     fn refresh_children(&mut self) {
         self.children.clear();
         self.assignments.clear();
@@ -334,136 +351,386 @@ fn format_event(event: &LogEvent) -> String {
     }
 }
 
+fn status_color(status: Status, visuals: &egui::Visuals) -> egui::Color32 {
+    match status {
+        Status::Done => {
+            if visuals.dark_mode {
+                egui::Color32::LIGHT_GREEN
+            } else {
+                egui::Color32::DARK_GREEN
+            }
+        }
+        Status::Cancelled => visuals.warn_fg_color,
+        Status::Failed => visuals.error_fg_color,
+        Status::Scanning | Status::Planning | Status::Applying => visuals.hyperlink_color,
+        Status::Idle => visuals.weak_text_color(),
+    }
+}
+
+fn assignment_color(assignment: Assignment, visuals: &egui::Visuals) -> egui::Color32 {
+    match assignment {
+        Assignment::Movies => visuals.hyperlink_color,
+        Assignment::Tv => {
+            if visuals.dark_mode {
+                egui::Color32::LIGHT_GREEN
+            } else {
+                egui::Color32::DARK_GREEN
+            }
+        }
+        Assignment::Unassigned => visuals.weak_text_color(),
+    }
+}
+
 impl eframe::App for GuiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
         if self.run.is_some() {
-            ui.ctx().request_repaint();
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
         }
 
         let running = self.run.is_some();
-        ui.heading("media-manager");
-
-        ui.horizontal(|ui| {
-            ui.label("Source:");
-            let response = ui.add_enabled(!running, egui::TextEdit::singleline(&mut self.source));
-            if !running && response.lost_focus() {
-                self.refresh_children();
-            }
-            if ui
-                .add_enabled(!running, egui::Button::new("Browse…"))
-                .clicked()
-            {
-                self.browse_source();
-            }
-        });
-
-        ui.horizontal(|ui| {
-            ui.label("Dest (optional):");
-            ui.add_enabled(!running, egui::TextEdit::singleline(&mut self.dest));
-            if ui
-                .add_enabled(!running, egui::Button::new("Browse…"))
-                .clicked()
-            {
-                self.browse_dest();
-            }
-        });
-        ui.small("Leave dest empty to organise in place, same as the CLI.");
-
-        if let Some(error) = &self.error {
-            ui.colored_label(egui::Color32::RED, error.as_str());
-        }
-
-        ui.separator();
-        ui.label("Children (select rows, then assign):");
-        let children = self.children.clone();
-        egui::ScrollArea::vertical()
-            .max_height(220.0)
-            .id_salt("children")
+        egui::Frame::central_panel(ui.style())
+            .inner_margin(egui::Margin::same(18))
             .show(ui, |ui| {
-                for child in &children {
-                    let assignment = *self
-                        .assignments
-                        .get(child)
-                        .unwrap_or(&Assignment::Unassigned);
-                    let is_selected = self.selected.contains(child);
-                    let name = child
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| child.display().to_string());
-                    let text = format!("{name}  [{}]", assignment.label());
-                    if ui
-                        .add_enabled(!running, egui::Button::selectable(is_selected, text))
-                        .clicked()
-                    {
-                        if is_selected {
-                            self.selected.retain(|p| p != child);
-                        } else {
-                            self.selected.push(child.clone());
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.heading("Media Manager");
+                        ui.label(
+                            egui::RichText::new("Organise media safely for Jellyfin")
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                    });
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            egui::widgets::global_theme_preference_buttons(ui);
+                        },
+                    );
+                });
+
+                ui.add_space(14.0);
+                egui::Frame::group(ui.style())
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        ui.strong("1  Choose folders");
+                        ui.add_space(8.0);
+
+                        egui::Grid::new("folder_inputs")
+                            .num_columns(3)
+                            .spacing([10.0, 8.0])
+                            .show(ui, |ui| {
+                                ui.label("Source");
+                                let source_response = ui.add_enabled(
+                                    !running,
+                                    egui::TextEdit::singleline(&mut self.source)
+                                        .desired_width(f32::INFINITY)
+                                        .hint_text("Folder containing your media"),
+                                );
+                                if !running
+                                    && source_response.lost_focus()
+                                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                                {
+                                    self.refresh_children();
+                                }
+                                if ui
+                                    .add_enabled(!running, egui::Button::new("Browse…"))
+                                    .clicked()
+                                {
+                                    self.browse_source();
+                                }
+                                ui.end_row();
+
+                                ui.label("Destination");
+                                ui.add_enabled(
+                                    !running,
+                                    egui::TextEdit::singleline(&mut self.dest)
+                                        .desired_width(f32::INFINITY)
+                                        .hint_text("Optional — leave empty to organise in place"),
+                                );
+                                if ui
+                                    .add_enabled(!running, egui::Button::new("Browse…"))
+                                    .clicked()
+                                {
+                                    self.browse_dest();
+                                }
+                                ui.end_row();
+                            });
+
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Only assigned items are scanned. An empty destination keeps files in the source.",
+                            )
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                        );
+
+                        if let Some(error) = &self.error {
+                            ui.add_space(6.0);
+                            ui.colored_label(ui.visuals().error_fg_color, format!("⚠  {error}"));
                         }
-                    }
-                }
-            });
+                    });
 
-        ui.horizontal(|ui| {
-            let has_selection = !self.selected.is_empty() && !running;
-            if ui
-                .add_enabled(has_selection, egui::Button::new("Mark as Movies"))
-                .clicked()
-            {
-                self.mark_selected(Assignment::Movies);
-            }
-            if ui
-                .add_enabled(has_selection, egui::Button::new("Mark as TV"))
-                .clicked()
-            {
-                self.mark_selected(Assignment::Tv);
-            }
-            if ui
-                .add_enabled(has_selection, egui::Button::new("Clear"))
-                .clicked()
-            {
-                self.mark_selected(Assignment::Unassigned);
-            }
-        });
+                ui.add_space(10.0);
+                egui::Frame::group(ui.style())
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        let (movies, tv, unassigned) = self.assignment_counts();
+                        ui.horizontal(|ui| {
+                            ui.strong("2  Assign library types");
+                            ui.separator();
+                            ui.label(format!(
+                                "{movies} movies  •  {tv} TV  •  {unassigned} unassigned"
+                            ));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            !running && !self.children.is_empty(),
+                                            egui::Button::new("Select all").small(),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.selected = self.children.clone();
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            !running && !self.selected.is_empty(),
+                                            egui::Button::new("Deselect").small(),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.selected.clear();
+                                    }
+                                },
+                            );
+                        });
+                        ui.add_space(6.0);
 
-        ui.separator();
-        ui.add_enabled_ui(!running, |ui| {
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut self.apply, false, "Dry-run");
-                ui.radio_value(&mut self.apply, true, "Apply");
-            });
-        });
+                        let children = self.children.clone();
+                        egui::Frame::new()
+                            .fill(ui.visuals().extreme_bg_color)
+                            .inner_margin(6.0)
+                            .show(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .max_height(210.0)
+                                    .id_salt("children")
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        if children.is_empty() {
+                                            ui.centered_and_justified(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new(
+                                                        "Choose a source folder to see its contents",
+                                                    )
+                                                    .color(ui.visuals().weak_text_color()),
+                                                );
+                                            });
+                                        }
+                                        for child in &children {
+                                            let assignment = *self
+                                                .assignments
+                                                .get(child)
+                                                .unwrap_or(&Assignment::Unassigned);
+                                            let is_selected = self.selected.contains(child);
+                                            let name = child
+                                                .file_name()
+                                                .map(|name| name.to_string_lossy().to_string())
+                                                .unwrap_or_else(|| child.display().to_string());
 
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(self.can_start() && !running, egui::Button::new("Start"))
-                .clicked()
-            {
-                self.start();
-            }
-            if ui.add_enabled(running, egui::Button::new("Stop")).clicked() {
-                self.stop();
-            }
-            ui.label(format!("Status: {}", self.status.label()));
-        });
+                                            ui.horizontal(|ui| {
+                                                let available =
+                                                    (ui.available_width() - 110.0).max(120.0);
+                                                let response = ui.add_enabled(
+                                                    !running,
+                                                    egui::Button::selectable(
+                                                        is_selected,
+                                                        name,
+                                                    )
+                                                    .min_size(egui::vec2(available, 26.0)),
+                                                );
+                                                response.clone().on_hover_text(child.display().to_string());
+                                                ui.label(
+                                                    egui::RichText::new(assignment.label())
+                                                        .strong()
+                                                        .color(assignment_color(
+                                                            assignment,
+                                                            ui.visuals(),
+                                                        )),
+                                                );
+                                                if response.clicked() {
+                                                    if is_selected {
+                                                        self.selected.retain(|path| path != child);
+                                                    } else {
+                                                        self.selected.push(child.clone());
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    });
+                            });
 
-        if let Some((moved, merged, skipped, failed, cancelled)) = self.last_summary {
-            ui.label(format!(
-                    "moved={moved} merged={merged} skipped={skipped} failed={failed} cancelled={cancelled}"
-                ));
-        }
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} selected", self.selected.len()));
+                            let has_selection = !self.selected.is_empty() && !running;
+                            if ui
+                                .add_enabled(
+                                    has_selection,
+                                    egui::Button::new("🎬  Mark as Movies"),
+                                )
+                                .clicked()
+                            {
+                                self.mark_selected(Assignment::Movies);
+                            }
+                            if ui
+                                .add_enabled(has_selection, egui::Button::new("📺  Mark as TV"))
+                                .clicked()
+                            {
+                                self.mark_selected(Assignment::Tv);
+                            }
+                            if ui
+                                .add_enabled(has_selection, egui::Button::new("Clear assignment"))
+                                .clicked()
+                            {
+                                self.mark_selected(Assignment::Unassigned);
+                            }
+                        });
+                    });
 
-        ui.separator();
-        ui.label("Log:");
-        egui::ScrollArea::vertical()
-            .max_height(240.0)
-            .id_salt("log")
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                for line in &self.log {
-                    ui.monospace(line);
-                }
+                ui.add_space(10.0);
+                egui::Frame::group(ui.style())
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong("3  Review and run");
+                            ui.add_enabled_ui(!running, |ui| {
+                                ui.radio_value(&mut self.apply, false, "Preview only");
+                                ui.radio_value(&mut self.apply, true, "Apply changes");
+                            });
+
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            running,
+                                            egui::Button::new("Stop").fill(
+                                                ui.visuals().widgets.inactive.weak_bg_fill,
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.stop();
+                                    }
+                                    let start_label = if self.apply {
+                                        "Apply changes"
+                                    } else {
+                                        "Preview changes"
+                                    };
+                                    if ui
+                                        .add_enabled(
+                                            self.can_start() && !running,
+                                            egui::Button::new(start_label)
+                                                .fill(ui.visuals().selection.bg_fill),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.start();
+                                    }
+                                },
+                            );
+                        });
+
+                        if self.apply && !running {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Apply mode moves files. Existing destinations are never overwritten.",
+                                )
+                                .small()
+                                .color(ui.visuals().warn_fg_color),
+                            );
+                        }
+
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if self.status.is_running() {
+                                ui.spinner();
+                            }
+                            ui.label("Status");
+                            ui.label(
+                                egui::RichText::new(self.status.label())
+                                    .strong()
+                                    .color(status_color(self.status, ui.visuals())),
+                            );
+
+                            if let Some((moved, merged, skipped, failed, cancelled)) =
+                                self.last_summary
+                            {
+                                ui.separator();
+                                ui.label(format!(
+                                    "{moved} moved  •  {merged} merged  •  {skipped} skipped  •  {failed} failed"
+                                ));
+                                if cancelled {
+                                    ui.label(
+                                        egui::RichText::new("cancelled")
+                                            .color(ui.visuals().warn_fg_color),
+                                    );
+                                }
+                            }
+                        });
+                    });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.strong("Activity log");
+                    ui.label(
+                        egui::RichText::new(format!("{} events", self.log.len()))
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui
+                                .add_enabled(
+                                    !running && !self.log.is_empty(),
+                                    egui::Button::new("Clear log").small(),
+                                )
+                                .clicked()
+                            {
+                                self.log.clear();
+                                self.last_summary = None;
+                            }
+                        },
+                    );
+                });
+                egui::Frame::new()
+                    .fill(ui.visuals().code_bg_color)
+                    .inner_margin(8.0)
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(ui.available_height().max(120.0))
+                            .id_salt("log")
+                            .stick_to_bottom(true)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                if self.log.is_empty() {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Run a preview to inspect planned changes here.",
+                                        )
+                                        .monospace()
+                                        .color(ui.visuals().weak_text_color()),
+                                    );
+                                }
+                                for line in &self.log {
+                                    ui.label(egui::RichText::new(line).monospace());
+                                }
+                            });
+                    });
             });
     }
 }
