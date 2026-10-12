@@ -9,13 +9,23 @@
 //! Compiled only into the `media-manager-gui` binary, behind the `gui`
 //! Cargo feature.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread::JoinHandle;
 
 use eframe::egui;
 use media_manager::{CancelToken, LibraryKind, LogEvent, WorkItem};
+
+#[path = "gui/theme.rs"]
+mod theme;
+#[path = "gui/widgets.rs"]
+mod widgets;
+
+use theme::{bold_font, Palette};
+use widgets::{Btn, BtnStyle, Icon};
+
+const ROW_HEIGHT: f32 = 42.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Assignment {
@@ -25,11 +35,28 @@ enum Assignment {
 }
 
 impl Assignment {
-    fn label(self) -> &'static str {
+    /// Text of the badge shown at the end of a list row.
+    fn badge(self) -> &'static str {
         match self {
-            Assignment::Unassigned => "unassigned",
+            Assignment::Unassigned => "Unassigned",
             Assignment::Movies => "Movies",
-            Assignment::Tv => "TV",
+            Assignment::Tv => "TV Shows",
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Assignment::Unassigned => Icon::Folder,
+            Assignment::Movies => Icon::Clapper,
+            Assignment::Tv => Icon::Monitor,
+        }
+    }
+
+    fn badge_colors(self, p: &Palette) -> (egui::Color32, egui::Color32) {
+        match self {
+            Assignment::Unassigned => (p.weak, p.button),
+            Assignment::Movies => (p.movies_fg, p.movies_bg),
+            Assignment::Tv => (p.tv_fg, p.tv_bg),
         }
     }
 }
@@ -74,7 +101,7 @@ pub struct GuiApp {
     dest: String,
     children: Vec<PathBuf>,
     assignments: BTreeMap<PathBuf, Assignment>,
-    selected: Vec<PathBuf>,
+    selected: HashSet<PathBuf>,
     apply: bool,
     status: Status,
     log: Vec<String>,
@@ -90,7 +117,7 @@ impl Default for GuiApp {
             dest: String::new(),
             children: Vec::new(),
             assignments: BTreeMap::new(),
-            selected: Vec::new(),
+            selected: HashSet::new(),
             apply: false,
             status: Status::Idle,
             log: Vec::new(),
@@ -102,6 +129,12 @@ impl Default for GuiApp {
 }
 
 impl GuiApp {
+    /// Builds the app and installs Manrope, the palettes and the text styles.
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        theme::install(&cc.egui_ctx);
+        GuiApp::default()
+    }
+
     fn assignment_counts(&self) -> (usize, usize, usize) {
         self.assignments
             .values()
@@ -351,34 +384,433 @@ fn format_event(event: &LogEvent) -> String {
     }
 }
 
-fn status_color(status: Status, visuals: &egui::Visuals) -> egui::Color32 {
+fn status_color(status: Status, p: &Palette, visuals: &egui::Visuals) -> egui::Color32 {
     match status {
-        Status::Done => {
-            if visuals.dark_mode {
-                egui::Color32::LIGHT_GREEN
-            } else {
-                egui::Color32::DARK_GREEN
-            }
-        }
+        Status::Done => p.ok,
         Status::Cancelled => visuals.warn_fg_color,
         Status::Failed => visuals.error_fg_color,
-        Status::Scanning | Status::Planning | Status::Applying => visuals.hyperlink_color,
-        Status::Idle => visuals.weak_text_color(),
+        Status::Idle | Status::Scanning | Status::Planning | Status::Applying => p.accent,
     }
 }
 
-fn assignment_color(assignment: Assignment, visuals: &egui::Visuals) -> egui::Color32 {
-    match assignment {
-        Assignment::Movies => visuals.hyperlink_color,
-        Assignment::Tv => {
-            if visuals.dark_mode {
-                egui::Color32::LIGHT_GREEN
-            } else {
-                egui::Color32::DARK_GREEN
-            }
-        }
-        Assignment::Unassigned => visuals.weak_text_color(),
+fn log_line_color(line: &str, p: &Palette, visuals: &egui::Visuals) -> egui::Color32 {
+    if line.starts_with("FAIL") {
+        visuals.error_fg_color
+    } else if line.starts_with("SKIP") {
+        visuals.warn_fg_color
+    } else if line.starts_with("Summary") {
+        p.accent
+    } else {
+        p.text
     }
+}
+
+impl GuiApp {
+    fn folders_card(&mut self, ui: &mut egui::Ui, running: bool) {
+        let p = Palette::of(ui.visuals());
+        widgets::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                widgets::section_title(ui, 1, "Choose folders");
+                widgets::right(ui, |ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                    widgets::paint_icon(ui.painter(), rect, Icon::Folder, p.weak);
+                });
+            });
+            ui.add_space(8.0);
+
+            let gap = 12.0;
+            let source_label = 62.0;
+            let dest_label = 86.0;
+            let row_height = 38.0;
+            let group_width =
+                ((ui.available_width() - source_label - dest_label - gap * 3.0) / 2.0).max(150.0);
+            let mut browse_source = false;
+            let mut browse_dest = false;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                ui.allocate_ui(egui::vec2(source_label, row_height), |ui| {
+                    ui.with_layout(
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| ui.label(egui::RichText::new("Source").color(p.weak)),
+                    );
+                });
+                let (response, browse) = widgets::path_input(
+                    ui,
+                    group_width,
+                    &mut self.source,
+                    !running,
+                    "Folder containing your media",
+                );
+                browse_source = browse;
+                if !running
+                    && response.lost_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                {
+                    self.refresh_children();
+                }
+                ui.allocate_ui(egui::vec2(dest_label, row_height), |ui| {
+                    ui.with_layout(
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| ui.label(egui::RichText::new("Destination").color(p.weak)),
+                    );
+                });
+                let (_, browse) = widgets::path_input(
+                    ui,
+                    group_width,
+                    &mut self.dest,
+                    !running,
+                    "Optional — leave empty to organise in place",
+                );
+                browse_dest = browse;
+            });
+            if browse_source {
+                self.browse_source();
+            }
+            if browse_dest {
+                self.browse_dest();
+            }
+
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "Only assigned items are scanned. An empty destination keeps files in the source.",
+                )
+                .color(p.weak),
+            );
+
+            if let Some(error) = &self.error {
+                ui.add_space(6.0);
+                ui.colored_label(ui.visuals().error_fg_color, format!("⚠  {error}"));
+            }
+        });
+    }
+
+    fn assign_card(&mut self, ui: &mut egui::Ui, running: bool) {
+        let p = Palette::of(ui.visuals());
+        widgets::card(ui, |ui| {
+            let (movies, tv, unassigned) = self.assignment_counts();
+            ui.horizontal(|ui| {
+                widgets::section_title(ui, 2, "Assign library types");
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(format!("{movies} movies")).color(p.accent));
+                ui.label(
+                    egui::RichText::new(format!("•  {tv} TV  •  {unassigned} unassigned"))
+                        .color(p.weak),
+                );
+                widgets::right(ui, |ui| {
+                    // Added right-to-left, so this reads Deselect, Refresh, Select all.
+                    if Btn::new("Select all", BtnStyle::Secondary)
+                        .small()
+                        .enabled(!running && !self.children.is_empty())
+                        .show(ui)
+                        .clicked()
+                    {
+                        self.selected = self.children.iter().cloned().collect();
+                    }
+                    if Btn::new("Refresh", BtnStyle::Secondary)
+                        .small()
+                        .icon(Icon::Refresh)
+                        .enabled(!running)
+                        .show(ui)
+                        .clicked()
+                    {
+                        self.refresh_children();
+                    }
+                    if Btn::new("Deselect", BtnStyle::Secondary)
+                        .small()
+                        .enabled(!running && !self.selected.is_empty())
+                        .show(ui)
+                        .clicked()
+                    {
+                        self.selected.clear();
+                    }
+                });
+            });
+            ui.add_space(10.0);
+
+            let mut toggled: Option<PathBuf> = None;
+            egui::Frame::new()
+                .fill(p.input)
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::symmetric(0, 4))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    egui::ScrollArea::vertical()
+                        .max_height(ROW_HEIGHT * 5.0)
+                        .id_salt("children")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            if self.children.is_empty() {
+                                ui.add_space(24.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Choose a source folder to see its contents",
+                                        )
+                                        .color(p.weak),
+                                    );
+                                });
+                            }
+                            for child in &self.children {
+                                let assignment = *self
+                                    .assignments
+                                    .get(child)
+                                    .unwrap_or(&Assignment::Unassigned);
+                                let checked = self.selected.contains(child);
+                                if assignment_row(ui, child, assignment, checked, !running, &p) {
+                                    toggled = Some(child.clone());
+                                }
+                            }
+                        });
+                });
+            if let Some(path) = toggled {
+                if !self.selected.remove(&path) {
+                    self.selected.insert(path);
+                }
+            }
+
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} selected", self.selected.len()))
+                        .font(bold_font(14.0)),
+                );
+                widgets::right(ui, |ui| {
+                    let has_selection = !self.selected.is_empty() && !running;
+                    if Btn::new("Clear assignment", BtnStyle::Secondary)
+                        .enabled(has_selection)
+                        .show(ui)
+                        .clicked()
+                    {
+                        self.mark_selected(Assignment::Unassigned);
+                    }
+                    if Btn::new("Mark as TV", BtnStyle::Secondary)
+                        .icon(Icon::Monitor)
+                        .enabled(has_selection)
+                        .show(ui)
+                        .clicked()
+                    {
+                        self.mark_selected(Assignment::Tv);
+                    }
+                    if Btn::new("Mark as Movies", BtnStyle::Secondary)
+                        .icon(Icon::Clapper)
+                        .enabled(has_selection)
+                        .show(ui)
+                        .clicked()
+                    {
+                        self.mark_selected(Assignment::Movies);
+                    }
+                });
+            });
+        });
+    }
+
+    fn run_card(&mut self, ui: &mut egui::Ui, running: bool) {
+        let p = Palette::of(ui.visuals());
+        widgets::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                widgets::section_title(ui, 3, "Review and run");
+                ui.add_space(4.0);
+                if widgets::radio(ui, !self.apply, "Preview only", !running).clicked() {
+                    self.apply = false;
+                }
+                if widgets::radio(ui, self.apply, "Apply changes", !running).clicked() {
+                    self.apply = true;
+                }
+
+                widgets::right(ui, |ui| {
+                    // Right-to-left: Stop ends up to the right of the primary button.
+                    if Btn::new("Stop", BtnStyle::Secondary)
+                        .enabled(running)
+                        .min_width(64.0)
+                        .show(ui)
+                        .clicked()
+                    {
+                        self.stop();
+                    }
+                    let start_label = if self.apply {
+                        "Apply changes"
+                    } else {
+                        "Preview changes"
+                    };
+                    if Btn::new(start_label, BtnStyle::Primary)
+                        .icon(Icon::Play)
+                        .enabled(self.can_start() && !running)
+                        .show(ui)
+                        .clicked()
+                    {
+                        self.start();
+                    }
+                });
+            });
+
+            if self.apply && !running {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Apply mode moves files. Existing destinations are never overwritten.",
+                    )
+                    .small()
+                    .color(ui.visuals().warn_fg_color),
+                );
+            }
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if self.status.is_running() {
+                    ui.spinner();
+                }
+                ui.label(egui::RichText::new("Status").color(p.weak));
+                ui.label(
+                    egui::RichText::new(self.status.label())
+                        .font(bold_font(14.0))
+                        .color(status_color(self.status, &p, ui.visuals())),
+                );
+
+                if let Some((moved, merged, skipped, failed, cancelled)) = self.last_summary {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{moved} moved  •  {merged} merged  •  {skipped} skipped  •  {failed} failed"
+                        ))
+                        .color(p.weak),
+                    );
+                    if cancelled {
+                        ui.label(
+                            egui::RichText::new("cancelled").color(ui.visuals().warn_fg_color),
+                        );
+                    }
+                }
+            });
+        });
+    }
+
+    fn log_card(&mut self, ui: &mut egui::Ui, running: bool) {
+        let p = Palette::of(ui.visuals());
+        widgets::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Activity log").font(bold_font(16.0)));
+                widgets::pill(ui, &format!("{} events", self.log.len()), p.weak, p.button);
+                widgets::right(ui, |ui| {
+                    if Btn::new("Clear log", BtnStyle::Link)
+                        .small()
+                        .enabled(!running && !self.log.is_empty())
+                        .show(ui)
+                        .clicked()
+                    {
+                        self.log.clear();
+                        self.last_summary = None;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            egui::Frame::new()
+                .fill(p.input)
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::same(14))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    egui::ScrollArea::vertical()
+                        .max_height(ui.available_height().max(100.0))
+                        .id_salt("log")
+                        .stick_to_bottom(true)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if self.log.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Run a preview to inspect planned changes here.",
+                                    )
+                                    .small()
+                                    .italics()
+                                    .color(p.weak),
+                                );
+                            }
+                            for line in &self.log {
+                                ui.label(
+                                    egui::RichText::new(line)
+                                        .monospace()
+                                        .color(log_line_color(line, &p, ui.visuals())),
+                                );
+                            }
+                        });
+                });
+        });
+    }
+}
+
+/// One list row: checkbox, type icon, full path and a type badge. The whole
+/// row toggles selection. Returns true when it was clicked.
+fn assignment_row(
+    ui: &mut egui::Ui,
+    path: &std::path::Path,
+    assignment: Assignment,
+    checked: bool,
+    enabled: bool,
+    p: &Palette,
+) -> bool {
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_HEIGHT), sense);
+    if !ui.is_rect_visible(rect) {
+        return response.clicked();
+    }
+    if enabled && response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let painter = ui.painter();
+    if enabled && response.hovered() {
+        painter.rect_filled(rect, 0.0, p.button.gamma_multiply(0.5));
+    }
+    painter.hline(
+        rect.x_range().shrink(14.0),
+        rect.bottom(),
+        egui::Stroke::new(1.0, p.divider),
+    );
+
+    let cy = rect.center().y;
+    let checkbox = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 14.0 + 9.0, cy),
+        egui::vec2(18.0, 18.0),
+    );
+    widgets::paint_checkbox(painter, checkbox, checked, enabled, p);
+
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 56.0, cy),
+        egui::vec2(16.0, 16.0),
+    );
+    widgets::paint_icon(painter, icon_rect, assignment.icon(), p.accent);
+
+    let (fg, bg) = assignment.badge_colors(p);
+    let pill_size = widgets::pill_size(painter, assignment.badge(), 12.0);
+    let pill_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.right() - 14.0 - pill_size.x, cy - pill_size.y / 2.0),
+        pill_size,
+    );
+    widgets::paint_pill(painter, pill_rect, assignment.badge(), 12.0, fg, bg, true);
+
+    let text_x = rect.left() + 76.0;
+    let max_width = (pill_rect.left() - 14.0 - text_x).max(40.0);
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        path.display().to_string(),
+        egui::FontId::proportional(14.0),
+        p.text,
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_width);
+    let galley = painter.layout_job(job);
+    painter.galley(
+        egui::pos2(text_x, cy - galley.size().y / 2.0),
+        galley,
+        p.text,
+    );
+
+    let response = response.on_hover_text(path.display().to_string());
+    response.clicked()
 }
 
 impl eframe::App for GuiApp {
@@ -391,346 +823,16 @@ impl eframe::App for GuiApp {
 
         let running = self.run.is_some();
         egui::Frame::central_panel(ui.style())
-            .inner_margin(egui::Margin::same(18))
+            .inner_margin(egui::Margin::same(20))
             .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 14.0;
                 ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.heading("Media Manager");
-                        ui.label(
-                            egui::RichText::new("Organise media safely for Jellyfin")
-                                .color(ui.visuals().weak_text_color()),
-                        );
-                    });
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            egui::widgets::global_theme_preference_buttons(ui);
-                        },
-                    );
+                    widgets::right(ui, widgets::theme_switcher);
                 });
-
-                ui.add_space(14.0);
-                egui::Frame::group(ui.style())
-                    .inner_margin(12.0)
-                    .show(ui, |ui| {
-                        ui.strong("1  Choose folders");
-                        ui.add_space(8.0);
-
-                        egui::Grid::new("folder_inputs")
-                            .num_columns(3)
-                            .spacing([10.0, 8.0])
-                            .show(ui, |ui| {
-                                ui.label("Source");
-                                let source_response = ui.add_enabled(
-                                    !running,
-                                    egui::TextEdit::singleline(&mut self.source)
-                                        .desired_width(f32::INFINITY)
-                                        .hint_text("Folder containing your media"),
-                                );
-                                if !running
-                                    && source_response.lost_focus()
-                                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
-                                {
-                                    self.refresh_children();
-                                }
-                                if ui
-                                    .add_enabled(!running, egui::Button::new("Browse…"))
-                                    .clicked()
-                                {
-                                    self.browse_source();
-                                }
-                                ui.end_row();
-
-                                ui.label("Destination");
-                                ui.add_enabled(
-                                    !running,
-                                    egui::TextEdit::singleline(&mut self.dest)
-                                        .desired_width(f32::INFINITY)
-                                        .hint_text("Optional — leave empty to organise in place"),
-                                );
-                                if ui
-                                    .add_enabled(!running, egui::Button::new("Browse…"))
-                                    .clicked()
-                                {
-                                    self.browse_dest();
-                                }
-                                ui.end_row();
-                            });
-
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "Only assigned items are scanned. An empty destination keeps files in the source.",
-                            )
-                            .small()
-                            .color(ui.visuals().weak_text_color()),
-                        );
-
-                        if let Some(error) = &self.error {
-                            ui.add_space(6.0);
-                            ui.colored_label(ui.visuals().error_fg_color, format!("⚠  {error}"));
-                        }
-                    });
-
-                ui.add_space(10.0);
-                egui::Frame::group(ui.style())
-                    .inner_margin(12.0)
-                    .show(ui, |ui| {
-                        let (movies, tv, unassigned) = self.assignment_counts();
-                        ui.horizontal(|ui| {
-                            ui.strong("2  Assign library types");
-                            ui.separator();
-                            ui.label(format!(
-                                "{movies} movies  •  {tv} TV  •  {unassigned} unassigned"
-                            ));
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .add_enabled(
-                                            !running && !self.children.is_empty(),
-                                            egui::Button::new("Select all").small(),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.selected = self.children.clone();
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            !running && !self.selected.is_empty(),
-                                            egui::Button::new("Deselect").small(),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.selected.clear();
-                                    }
-                                },
-                            );
-                        });
-                        ui.add_space(6.0);
-
-                        let children = self.children.clone();
-                        egui::Frame::new()
-                            .fill(ui.visuals().extreme_bg_color)
-                            .inner_margin(6.0)
-                            .show(ui, |ui| {
-                                egui::ScrollArea::vertical()
-                                    .max_height(210.0)
-                                    .id_salt("children")
-                                    .auto_shrink([false, false])
-                                    .show(ui, |ui| {
-                                        if children.is_empty() {
-                                            ui.centered_and_justified(|ui| {
-                                                ui.label(
-                                                    egui::RichText::new(
-                                                        "Choose a source folder to see its contents",
-                                                    )
-                                                    .color(ui.visuals().weak_text_color()),
-                                                );
-                                            });
-                                        }
-                                        for child in &children {
-                                            let assignment = *self
-                                                .assignments
-                                                .get(child)
-                                                .unwrap_or(&Assignment::Unassigned);
-                                            let is_selected = self.selected.contains(child);
-                                            let name = child
-                                                .file_name()
-                                                .map(|name| name.to_string_lossy().to_string())
-                                                .unwrap_or_else(|| child.display().to_string());
-
-                                            ui.horizontal(|ui| {
-                                                let available =
-                                                    (ui.available_width() - 110.0).max(120.0);
-                                                let response = ui.add_enabled(
-                                                    !running,
-                                                    egui::Button::selectable(
-                                                        is_selected,
-                                                        name,
-                                                    )
-                                                    .min_size(egui::vec2(available, 26.0)),
-                                                );
-                                                response.clone().on_hover_text(child.display().to_string());
-                                                ui.label(
-                                                    egui::RichText::new(assignment.label())
-                                                        .strong()
-                                                        .color(assignment_color(
-                                                            assignment,
-                                                            ui.visuals(),
-                                                        )),
-                                                );
-                                                if response.clicked() {
-                                                    if is_selected {
-                                                        self.selected.retain(|path| path != child);
-                                                    } else {
-                                                        self.selected.push(child.clone());
-                                                    }
-                                                }
-                                            });
-                                        }
-                                    });
-                            });
-
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            ui.label(format!("{} selected", self.selected.len()));
-                            let has_selection = !self.selected.is_empty() && !running;
-                            if ui
-                                .add_enabled(
-                                    has_selection,
-                                    egui::Button::new("🎬  Mark as Movies"),
-                                )
-                                .clicked()
-                            {
-                                self.mark_selected(Assignment::Movies);
-                            }
-                            if ui
-                                .add_enabled(has_selection, egui::Button::new("📺  Mark as TV"))
-                                .clicked()
-                            {
-                                self.mark_selected(Assignment::Tv);
-                            }
-                            if ui
-                                .add_enabled(has_selection, egui::Button::new("Clear assignment"))
-                                .clicked()
-                            {
-                                self.mark_selected(Assignment::Unassigned);
-                            }
-                        });
-                    });
-
-                ui.add_space(10.0);
-                egui::Frame::group(ui.style())
-                    .inner_margin(12.0)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.strong("3  Review and run");
-                            ui.add_enabled_ui(!running, |ui| {
-                                ui.radio_value(&mut self.apply, false, "Preview only");
-                                ui.radio_value(&mut self.apply, true, "Apply changes");
-                            });
-
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .add_enabled(
-                                            running,
-                                            egui::Button::new("Stop").fill(
-                                                ui.visuals().widgets.inactive.weak_bg_fill,
-                                            ),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.stop();
-                                    }
-                                    let start_label = if self.apply {
-                                        "Apply changes"
-                                    } else {
-                                        "Preview changes"
-                                    };
-                                    if ui
-                                        .add_enabled(
-                                            self.can_start() && !running,
-                                            egui::Button::new(start_label)
-                                                .fill(ui.visuals().selection.bg_fill),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.start();
-                                    }
-                                },
-                            );
-                        });
-
-                        if self.apply && !running {
-                            ui.label(
-                                egui::RichText::new(
-                                    "Apply mode moves files. Existing destinations are never overwritten.",
-                                )
-                                .small()
-                                .color(ui.visuals().warn_fg_color),
-                            );
-                        }
-
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if self.status.is_running() {
-                                ui.spinner();
-                            }
-                            ui.label("Status");
-                            ui.label(
-                                egui::RichText::new(self.status.label())
-                                    .strong()
-                                    .color(status_color(self.status, ui.visuals())),
-                            );
-
-                            if let Some((moved, merged, skipped, failed, cancelled)) =
-                                self.last_summary
-                            {
-                                ui.separator();
-                                ui.label(format!(
-                                    "{moved} moved  •  {merged} merged  •  {skipped} skipped  •  {failed} failed"
-                                ));
-                                if cancelled {
-                                    ui.label(
-                                        egui::RichText::new("cancelled")
-                                            .color(ui.visuals().warn_fg_color),
-                                    );
-                                }
-                            }
-                        });
-                    });
-
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.strong("Activity log");
-                    ui.label(
-                        egui::RichText::new(format!("{} events", self.log.len()))
-                            .small()
-                            .color(ui.visuals().weak_text_color()),
-                    );
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            if ui
-                                .add_enabled(
-                                    !running && !self.log.is_empty(),
-                                    egui::Button::new("Clear log").small(),
-                                )
-                                .clicked()
-                            {
-                                self.log.clear();
-                                self.last_summary = None;
-                            }
-                        },
-                    );
-                });
-                egui::Frame::new()
-                    .fill(ui.visuals().code_bg_color)
-                    .inner_margin(8.0)
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .max_height(ui.available_height().max(120.0))
-                            .id_salt("log")
-                            .stick_to_bottom(true)
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                if self.log.is_empty() {
-                                    ui.label(
-                                        egui::RichText::new(
-                                            "Run a preview to inspect planned changes here.",
-                                        )
-                                        .monospace()
-                                        .color(ui.visuals().weak_text_color()),
-                                    );
-                                }
-                                for line in &self.log {
-                                    ui.label(egui::RichText::new(line).monospace());
-                                }
-                            });
-                    });
+                self.folders_card(ui, running);
+                self.assign_card(ui, running);
+                self.run_card(ui, running);
+                self.log_card(ui, running);
             });
     }
 }
