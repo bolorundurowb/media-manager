@@ -181,3 +181,14 @@ The GUI calls the same `run_items` engine entry point the tests exercise —
 it does not reimplement scanning, parsing, grouping, planning, or executing.
 Its log streams interleaved job start/finish and file-operation events from
 the same bounded parallel engine used by the CLI.
+
+### Update notifications
+
+On launch, and every 6 hours while the window stays open, the GUI asks the
+GitHub releases API whether a newer version than the one you are running has
+been published. If so, a banner appears at the top with a **View release**
+button that opens the release page in your browser, where the binaries can be
+downloaded. **Dismiss** hides the banner for that version until a newer one
+ships. Failures (offline, rate-limited) are silent and retried on the next
+check. Nothing is downloaded or installed automatically. Set the
+`MEDIA_MANAGER_NO_UPDATE_CHECK` environment variable to disable the check.
