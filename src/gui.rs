@@ -167,7 +167,8 @@ impl GuiApp {
     /// Picks up releases found by the background checker.
     fn drain_updates(&mut self) {
         let Some(rx) = &self.update_rx else { return };
-        while let Ok(info) = rx.try_recv() {
+        let pending: Vec<UpdateInfo> = rx.try_iter().collect();
+        for info in pending {
             self.offer_update(info);
         }
     }
