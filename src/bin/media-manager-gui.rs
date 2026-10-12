@@ -8,14 +8,15 @@ mod gui;
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([900.0, 820.0])
-            .with_min_inner_size([680.0, 640.0]),
+            .with_title("Media Manager – Jellyfin Organizer")
+            .with_inner_size([940.0, 860.0])
+            .with_min_inner_size([760.0, 720.0]),
         centered: true,
         ..Default::default()
     };
     eframe::run_native(
-        "Media Manager",
+        "Media Manager – Jellyfin Organizer",
         options,
-        Box::new(|_cc| Ok(Box::new(gui::GuiApp::default()))),
+        Box::new(|cc| Ok(Box::new(gui::GuiApp::new(cc)))),
     )
 }
