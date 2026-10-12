@@ -17,7 +17,7 @@ required-features = ["gui"]
 [features]
 # Kept out of the default build so `cargo build` / `cargo test` stay a thin
 # CLI and never pull in eframe/egui/rfd (and their windowing/graphics deps).
-gui = ["dep:eframe", "dep:egui", "dep:rfd"]
+gui = ["dep:eframe", "dep:egui", "dep:rfd", "dep:ureq", "dep:serde_json"]
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
@@ -31,6 +31,9 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 eframe = { version = "0.36.1", optional = true }
 egui = { version = "0.36.1", optional = true }
 rfd = { version = "0.17.2", optional = true }
+# Update check against the GitHub releases API (also GUI-only).
+ureq = { version = "3.4.2", optional = true }
+serde_json = { version = "1.0.154", optional = true }
 rayon = "1.12.0"
 
 [target.'cfg(unix)'.dependencies]
