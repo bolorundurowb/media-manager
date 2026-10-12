@@ -417,7 +417,8 @@ impl GuiApp {
             ui.horizontal(|ui| {
                 widgets::section_title(ui, 1, "Choose folders");
                 widgets::right(ui, |ui| {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
                     widgets::paint_icon(ui.painter(), rect, Icon::Folder, p.weak);
                 });
             });
@@ -434,10 +435,9 @@ impl GuiApp {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 ui.allocate_ui(egui::vec2(source_label, row_height), |ui| {
-                    ui.with_layout(
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| ui.label(egui::RichText::new("Source").color(p.weak)),
-                    );
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new("Source").color(p.weak))
+                    });
                 });
                 let (response, browse) = ui
                     .allocate_ui(egui::vec2(group_width, row_height), |ui| {
@@ -458,10 +458,9 @@ impl GuiApp {
                     self.refresh_children();
                 }
                 ui.allocate_ui(egui::vec2(dest_label, row_height), |ui| {
-                    ui.with_layout(
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| ui.label(egui::RichText::new("Destination").color(p.weak)),
-                    );
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new("Destination").color(p.weak))
+                    });
                 });
                 let (_, browse) = ui
                     .allocate_ui(egui::vec2(group_width, row_height), |ui| {
@@ -742,9 +741,11 @@ impl GuiApp {
                             }
                             for line in &self.log {
                                 ui.label(
-                                    egui::RichText::new(line)
-                                        .monospace()
-                                        .color(log_line_color(line, &p, ui.visuals())),
+                                    egui::RichText::new(line).monospace().color(log_line_color(
+                                        line,
+                                        &p,
+                                        ui.visuals(),
+                                    )),
                                 );
                             }
                         });
@@ -793,10 +794,8 @@ fn assignment_row(
     );
     widgets::paint_checkbox(painter, checkbox, checked, enabled, p);
 
-    let icon_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + 56.0, cy),
-        egui::vec2(16.0, 16.0),
-    );
+    let icon_rect =
+        egui::Rect::from_center_size(egui::pos2(rect.left() + 56.0, cy), egui::vec2(16.0, 16.0));
     widgets::paint_icon(painter, icon_rect, assignment.icon(), p.accent);
 
     let (fg, bg) = assignment.badge_colors(p);

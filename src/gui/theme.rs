@@ -105,10 +105,7 @@ pub fn install(ctx: &egui::Context) {
         FontData::from_static(include_bytes!("../../assets/fonts/Manrope-Bold.ttf")).into(),
     );
 
-    let proportional = fonts
-        .families
-        .entry(FontFamily::Proportional)
-        .or_default();
+    let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
     proportional.insert(0, "Manrope".to_owned());
     // Bold falls back to the default fonts for glyphs Manrope lacks.
     let mut bold = vec!["Manrope-Bold".to_owned()];

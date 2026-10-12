@@ -2,8 +2,8 @@
 //! radios, the theme switcher and simple line icons (no icon font needed).
 
 use eframe::egui::{
-    self, Align, Color32, CornerRadius, FontId, Frame, Layout, Margin, Painter, Pos2, Rect,
-    RichText, Sense, Shape, Stroke, Ui, WidgetInfo, WidgetType, vec2,
+    self, vec2, Align, Color32, CornerRadius, FontId, Frame, Layout, Margin, Painter, Pos2, Rect,
+    RichText, Sense, Shape, Stroke, Ui, WidgetInfo, WidgetType,
 };
 
 use super::theme::{bold_font, Palette};
@@ -80,7 +80,11 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 .collect();
             let end = *pts.last().unwrap_or(&c);
             line(painter, pts, s);
-            line(painter, vec![end + vec2(-3.5, -0.5), end, end + vec2(0.5, -3.8)], s);
+            line(
+                painter,
+                vec![end + vec2(-3.5, -0.5), end, end + vec2(0.5, -3.8)],
+                s,
+            );
         }
         Icon::Play => {
             painter.add(Shape::convex_polygon(
@@ -118,7 +122,15 @@ pub fn pill_size(painter: &Painter, text: &str, font_size: f32) -> egui::Vec2 {
 }
 
 /// Paints a pill with `rect` already decided; returns nothing.
-pub fn paint_pill(painter: &Painter, rect: Rect, text: &str, font_size: f32, fg: Color32, bg: Color32, outline: bool) {
+pub fn paint_pill(
+    painter: &Painter,
+    rect: Rect,
+    text: &str,
+    font_size: f32,
+    fg: Color32,
+    bg: Color32,
+    outline: bool,
+) {
     let radius = CornerRadius::same(5);
     painter.rect_filled(rect, radius, bg);
     if outline {
@@ -167,7 +179,9 @@ pub enum BtnStyle {
     /// Text-only, no background.
     Link,
     /// Option inside the theme switcher.
-    Segment { active: bool },
+    Segment {
+        active: bool,
+    },
 }
 
 pub struct Btn<'a> {
@@ -231,9 +245,9 @@ impl<'a> Btn<'a> {
         let dim = |c: Color32, enabled: bool| if enabled { c } else { c.gamma_multiply(0.45) };
 
         // Measure with a placeholder colour; the real colour depends on hover.
-        let measure = ui
-            .painter()
-            .layout_no_wrap(self.label.to_owned(), font.clone(), Color32::WHITE);
+        let measure =
+            ui.painter()
+                .layout_no_wrap(self.label.to_owned(), font.clone(), Color32::WHITE);
         let icon_w = if self.icon.is_some() { 16.0 + 7.0 } else { 0.0 };
         let pad_x = match self.style {
             BtnStyle::Link => 4.0,
@@ -242,7 +256,11 @@ impl<'a> Btn<'a> {
         };
         let width = (measure.size().x + icon_w + pad_x * 2.0).max(self.min_width);
 
-        let sense = if self.enabled { Sense::click() } else { Sense::hover() };
+        let sense = if self.enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
         let (rect, response) = ui.allocate_exact_size(vec2(width, self.height), sense);
         let hovered = self.enabled && response.hovered();
         if hovered {
@@ -267,10 +285,7 @@ impl<'a> Btn<'a> {
                 if active {
                     (Some(p.accent), p.on_accent)
                 } else {
-                    (
-                        if hovered { Some(p.button_hover) } else { None },
-                        p.weak,
-                    )
+                    (if hovered { Some(p.button_hover) } else { None }, p.weak)
                 }
             }
         };
@@ -293,10 +308,8 @@ impl<'a> Btn<'a> {
             let content_w = icon_w + galley.size().x;
             let mut x = rect.center().x - content_w / 2.0;
             if let Some(icon) = self.icon {
-                let icon_rect = Rect::from_min_size(
-                    Pos2::new(x, rect.center().y - 8.0),
-                    vec2(16.0, 16.0),
-                );
+                let icon_rect =
+                    Rect::from_min_size(Pos2::new(x, rect.center().y - 8.0), vec2(16.0, 16.0));
                 paint_icon(painter, icon_rect, icon, fg);
                 x += icon_w;
             }
@@ -344,15 +357,17 @@ pub fn path_input(
                 let inner_w = input_w - 24.0;
                 ui.set_width(inner_w);
                 ui.set_height(H);
-                response = Some(ui.add_enabled(
-                    enabled,
-                    egui::TextEdit::singleline(text)
-                        .frame(Frame::NONE)
-                        .desired_width(inner_w)
-                        .min_size(vec2(inner_w, H))
-                        .vertical_align(Align::Center)
-                        .hint_text(hint),
-                ));
+                response = Some(
+                    ui.add_enabled(
+                        enabled,
+                        egui::TextEdit::singleline(text)
+                            .frame(Frame::NONE)
+                            .desired_width(inner_w)
+                            .min_size(vec2(inner_w, H))
+                            .vertical_align(Align::Center)
+                            .hint_text(hint),
+                    ),
+                );
             });
         browse = Btn::new("Browse", BtnStyle::Secondary)
             .enabled(enabled)
@@ -373,12 +388,20 @@ pub fn path_input(
 /// Radio with an accent ring and dot.
 pub fn radio(ui: &mut Ui, selected: bool, label: &str, enabled: bool) -> egui::Response {
     let p = Palette::of(ui.visuals());
-    let color = if enabled { p.text } else { p.text.gamma_multiply(0.45) };
+    let color = if enabled {
+        p.text
+    } else {
+        p.text.gamma_multiply(0.45)
+    };
     let galley = ui
         .painter()
         .layout_no_wrap(label.to_owned(), FontId::proportional(14.0), color);
     let size = vec2(18.0 + 8.0 + galley.size().x, 24.0);
-    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
     let (rect, response) = ui.allocate_exact_size(size, sense);
     if enabled && response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -386,7 +409,11 @@ pub fn radio(ui: &mut Ui, selected: bool, label: &str, enabled: bool) -> egui::R
     let painter = ui.painter();
     let center = Pos2::new(rect.left() + 9.0, rect.center().y);
     let ring = if selected { p.accent } else { p.weak };
-    let ring = if enabled { ring } else { ring.gamma_multiply(0.45) };
+    let ring = if enabled {
+        ring
+    } else {
+        ring.gamma_multiply(0.45)
+    };
     painter.circle_stroke(center, 8.0, Stroke::new(1.6, ring));
     if selected {
         painter.circle_filled(center, 4.0, ring);
@@ -396,7 +423,8 @@ pub fn radio(ui: &mut Ui, selected: bool, label: &str, enabled: bool) -> egui::R
         galley,
         color,
     );
-    response.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, enabled, selected, label));
+    response
+        .widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, enabled, selected, label));
     response
 }
 
@@ -416,10 +444,15 @@ pub fn theme_switcher(ui: &mut Ui) {
                     ("Dark", egui::ThemePreference::Dark),
                     ("System", egui::ThemePreference::System),
                 ] {
-                    let clicked = Btn::new(label, BtnStyle::Segment { active: current == pref })
-                        .height(26.0)
-                        .show(ui)
-                        .clicked();
+                    let clicked = Btn::new(
+                        label,
+                        BtnStyle::Segment {
+                            active: current == pref,
+                        },
+                    )
+                    .height(26.0)
+                    .show(ui)
+                    .clicked();
                     if clicked {
                         ui.ctx().set_theme(pref);
                     }
@@ -430,7 +463,8 @@ pub fn theme_switcher(ui: &mut Ui) {
 
 /// Right-aligned helper for header rows.
 pub fn right<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
-    ui.with_layout(Layout::right_to_left(Align::Center), add).inner
+    ui.with_layout(Layout::right_to_left(Align::Center), add)
+        .inner
 }
 
 /// Painted checkbox used by list rows (the whole row is the click target).
@@ -439,7 +473,12 @@ pub fn paint_checkbox(painter: &Painter, rect: Rect, checked: bool, enabled: boo
     let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.45) };
     if checked {
         painter.rect_filled(rect, radius, dim(p.check));
-        let pt = |x: f32, y: f32| Pos2::new(rect.left() + x * rect.width(), rect.top() + y * rect.height());
+        let pt = |x: f32, y: f32| {
+            Pos2::new(
+                rect.left() + x * rect.width(),
+                rect.top() + y * rect.height(),
+            )
+        };
         painter.add(Shape::line(
             vec![pt(0.24, 0.52), pt(0.43, 0.70), pt(0.77, 0.32)],
             Stroke::new(1.8, Color32::WHITE),
