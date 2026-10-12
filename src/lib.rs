@@ -8,6 +8,8 @@ pub mod parse;
 mod plan;
 mod report;
 pub mod scan;
+#[cfg(feature = "gui")]
+pub mod update;
 mod vfs;
 
 use std::path::PathBuf;
