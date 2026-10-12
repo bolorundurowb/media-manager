@@ -1236,6 +1236,13 @@ mod tests {
         assert!(movie.join("Inception.2010.1080p.mkv").exists());
     }
 
+    /// Runs one headless frame. Texture deltas must be cleared before the
+    /// output is dropped, otherwise epaint panics.
+    fn render(ctx: &egui::Context, input: egui::RawInput, add: impl FnMut(&mut egui::Ui)) {
+        let mut output = ctx.run_ui(input, add);
+        output.textures_delta.clear();
+    }
+
     /// Renders every card headlessly so the layout and painting code is
     /// exercised in both themes and in the main states.
     #[test]
@@ -1279,7 +1286,7 @@ mod tests {
                     )),
                     ..Default::default()
                 };
-                let _ = ctx.run_ui(input, |ui| {
+                render(&ctx, input, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         widgets::theme_switcher(ui);
                         app.folders_card(ui, running);
@@ -1294,7 +1301,7 @@ mod tests {
 
             // Empty list placeholder.
             let mut empty = GuiApp::default();
-            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            render(&ctx, egui::RawInput::default(), |ui| {
                 empty.assign_card(ui, false);
                 empty.log_card(ui, false);
             });
