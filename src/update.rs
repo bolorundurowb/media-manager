@@ -174,7 +174,8 @@ mod tests {
 
     #[test]
     fn same_or_older_release_yields_nothing() {
-        let body = r#"{"tag_name":"v0.3.0","html_url":"https://github.com/x/y/releases/tag/v0.3.0"}"#;
+        let body =
+            r#"{"tag_name":"v0.3.0","html_url":"https://github.com/x/y/releases/tag/v0.3.0"}"#;
         assert_eq!(parse_release(body, "0.3.0").unwrap(), None);
         assert_eq!(parse_release(body, "0.3.1").unwrap(), None);
     }
@@ -182,9 +183,15 @@ mod tests {
     #[test]
     fn foreign_or_missing_url_falls_back_to_releases_page() {
         let foreign = r#"{"tag_name":"v9.0.0","html_url":"https://evil.example/download"}"#;
-        assert_eq!(parse_release(foreign, "0.3.0").unwrap().unwrap().url, RELEASES_URL);
+        assert_eq!(
+            parse_release(foreign, "0.3.0").unwrap().unwrap().url,
+            RELEASES_URL
+        );
         let missing = r#"{"tag_name":"v9.0.0"}"#;
-        assert_eq!(parse_release(missing, "0.3.0").unwrap().unwrap().url, RELEASES_URL);
+        assert_eq!(
+            parse_release(missing, "0.3.0").unwrap().unwrap().url,
+            RELEASES_URL
+        );
     }
 
     #[test]

@@ -153,12 +153,16 @@ impl GuiApp {
         if !update::disabled_by_env() {
             let (tx, rx) = std::sync::mpsc::channel();
             let ctx = cc.egui_ctx.clone();
-            update::spawn_periodic(update::CURRENT_VERSION, UPDATE_CHECK_INTERVAL, move |info| {
-                // A closed channel means the window is gone: stop checking.
-                let delivered = tx.send(info).is_ok();
-                ctx.request_repaint();
-                delivered
-            });
+            update::spawn_periodic(
+                update::CURRENT_VERSION,
+                UPDATE_CHECK_INTERVAL,
+                move |info| {
+                    // A closed channel means the window is gone: stop checking.
+                    let delivered = tx.send(info).is_ok();
+                    ctx.request_repaint();
+                    delivered
+                },
+            );
             app.update_rx = Some(rx);
         }
         app
