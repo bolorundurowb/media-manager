@@ -1096,14 +1096,26 @@ mod tests {
     fn log_and_status_colors_are_distinct() {
         let visuals = egui::Visuals::dark();
         let p = Palette::DARK;
-        assert_eq!(log_line_color("FAIL x", &p, &visuals), visuals.error_fg_color);
-        assert_eq!(log_line_color("SKIP x", &p, &visuals), visuals.warn_fg_color);
+        assert_eq!(
+            log_line_color("FAIL x", &p, &visuals),
+            visuals.error_fg_color
+        );
+        assert_eq!(
+            log_line_color("SKIP x", &p, &visuals),
+            visuals.warn_fg_color
+        );
         assert_eq!(log_line_color("Summary: x", &p, &visuals), p.accent);
         assert_eq!(log_line_color("MOVE x", &p, &visuals), p.text);
 
         assert_eq!(status_color(Status::Done, &p, &visuals), p.ok);
-        assert_eq!(status_color(Status::Failed, &p, &visuals), visuals.error_fg_color);
-        assert_eq!(status_color(Status::Cancelled, &p, &visuals), visuals.warn_fg_color);
+        assert_eq!(
+            status_color(Status::Failed, &p, &visuals),
+            visuals.error_fg_color
+        );
+        assert_eq!(
+            status_color(Status::Cancelled, &p, &visuals),
+            visuals.warn_fg_color
+        );
         assert_eq!(status_color(Status::Idle, &p, &visuals), p.accent);
     }
 
@@ -1158,10 +1170,9 @@ mod tests {
 
     #[test]
     fn drain_events_maps_failed_and_cancelled() {
-        for (failed, cancelled, expected) in [
-            (1, false, Status::Failed),
-            (0, true, Status::Cancelled),
-        ] {
+        for (failed, cancelled, expected) in
+            [(1, false, Status::Failed), (0, true, Status::Cancelled)]
+        {
             let mut app = GuiApp::default();
             let tx = attach_run(&mut app);
             tx.send(LogEvent::Finished {
@@ -1277,7 +1288,11 @@ mod tests {
             // Idle, preview mode / apply mode (shows the warning) / running.
             for (apply, running) in [(false, false), (true, false), (true, true)] {
                 app.apply = apply;
-                app.status = if running { Status::Applying } else { Status::Done };
+                app.status = if running {
+                    Status::Applying
+                } else {
+                    Status::Done
+                };
                 let tx = running.then(|| attach_run(&mut app));
                 let input = egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
