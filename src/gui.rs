@@ -26,6 +26,8 @@ use theme::{bold_font, Palette};
 use widgets::{Btn, BtnStyle, Icon};
 
 const ROW_HEIGHT: f32 = 42.0;
+/// The page scrolls as a whole, so the log gets a fixed height.
+const LOG_HEIGHT: f32 = 240.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Assignment {
@@ -108,6 +110,8 @@ pub struct GuiApp {
     run: Option<RunHandle>,
     last_summary: Option<(usize, usize, usize, usize, bool)>,
     error: Option<String>,
+    /// Spare window height shared by the file list and the log.
+    extra_height: f32,
 }
 
 impl Default for GuiApp {
@@ -124,6 +128,7 @@ impl Default for GuiApp {
             run: None,
             last_summary: None,
             error: None,
+            extra_height: 0.0,
         }
     }
 }
@@ -434,13 +439,17 @@ impl GuiApp {
                         |ui| ui.label(egui::RichText::new("Source").color(p.weak)),
                     );
                 });
-                let (response, browse) = widgets::path_input(
-                    ui,
-                    group_width,
-                    &mut self.source,
-                    !running,
-                    "Folder containing your media",
-                );
+                let (response, browse) = ui
+                    .allocate_ui(egui::vec2(group_width, row_height), |ui| {
+                        widgets::path_input(
+                            ui,
+                            group_width,
+                            &mut self.source,
+                            !running,
+                            "Folder containing your media",
+                        )
+                    })
+                    .inner;
                 browse_source = browse;
                 if !running
                     && response.lost_focus()
@@ -454,13 +463,17 @@ impl GuiApp {
                         |ui| ui.label(egui::RichText::new("Destination").color(p.weak)),
                     );
                 });
-                let (_, browse) = widgets::path_input(
-                    ui,
-                    group_width,
-                    &mut self.dest,
-                    !running,
-                    "Optional — leave empty to organise in place",
-                );
+                let (_, browse) = ui
+                    .allocate_ui(egui::vec2(group_width, row_height), |ui| {
+                        widgets::path_input(
+                            ui,
+                            group_width,
+                            &mut self.dest,
+                            !running,
+                            "Optional — leave empty to organise in place",
+                        )
+                    })
+                    .inner;
                 browse_dest = browse;
             });
             if browse_source {
@@ -536,7 +549,7 @@ impl GuiApp {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     egui::ScrollArea::vertical()
-                        .max_height(ROW_HEIGHT * 5.0)
+                        .max_height(ROW_HEIGHT * 5.0 + self.extra_height / 2.0)
                         .id_salt("children")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -712,7 +725,7 @@ impl GuiApp {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     egui::ScrollArea::vertical()
-                        .max_height(ui.available_height().max(100.0))
+                        .max_height(LOG_HEIGHT + self.extra_height / 2.0)
                         .id_salt("log")
                         .stick_to_bottom(true)
                         .auto_shrink([false, false])
@@ -822,17 +835,40 @@ impl eframe::App for GuiApp {
         }
 
         let running = self.run.is_some();
+        // The panel frame fills the whole window (no stray background); the page
+        // scrolls inside it. Spare vertical space is split between the file list
+        // and the log.
         egui::Frame::central_panel(ui.style())
-            .inner_margin(egui::Margin::same(20))
+            .inner_margin(egui::Margin::ZERO)
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 14.0;
-                ui.horizontal(|ui| {
-                    widgets::right(ui, widgets::theme_switcher);
-                });
-                self.folders_card(ui, running);
-                self.assign_card(ui, running);
-                self.run_card(ui, running);
-                self.log_card(ui, running);
+                let viewport_height = ui.available_height();
+                let mut content_height = 0.0;
+                egui::ScrollArea::vertical()
+                    .id_salt("page")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let response = egui::Frame::new()
+                            .inner_margin(egui::Margin::same(20))
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.y = 14.0;
+                                ui.horizontal(|ui| {
+                                    widgets::right(ui, widgets::theme_switcher);
+                                });
+                                self.folders_card(ui, running);
+                                self.assign_card(ui, running);
+                                self.run_card(ui, running);
+                                self.log_card(ui, running);
+                            });
+                        content_height = response.response.rect.height();
+                    });
+
+                // Height the page needs with no extra space handed out.
+                let base = content_height - self.extra_height;
+                let extra = (viewport_height - base - 1.0).max(0.0);
+                if (extra - self.extra_height).abs() > 0.5 {
+                    self.extra_height = extra;
+                    ui.ctx().request_repaint();
+                }
             });
     }
 }

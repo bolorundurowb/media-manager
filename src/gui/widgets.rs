@@ -326,7 +326,9 @@ pub fn path_input(
     let p = Palette::of(ui.visuals());
     let mut browse = false;
     let mut response = None;
-    ui.horizontal(|ui| {
+    // `scope` keeps the parent's left-to-right layout; a nested `horizontal`
+    // gets its own row height and ends up misaligned with its siblings.
+    ui.scope(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let input_w = (width - BROWSE_W).max(60.0);
         Frame::new()
@@ -345,7 +347,7 @@ pub fn path_input(
                 response = Some(ui.add_enabled(
                     enabled,
                     egui::TextEdit::singleline(text)
-                        .frame(false)
+                        .frame(Frame::NONE)
                         .desired_width(inner_w)
                         .min_size(vec2(inner_w, H))
                         .vertical_align(Align::Center)
