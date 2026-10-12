@@ -871,3 +871,433 @@ impl eframe::App for GuiApp {
             });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+
+    /// Self-cleaning scratch directory (no dev-dependency needed).
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "media-manager-gui-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::SeqCst)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn app_with_source(dir: &Path) -> GuiApp {
+        let mut app = GuiApp {
+            source: dir.display().to_string(),
+            ..GuiApp::default()
+        };
+        app.refresh_children();
+        app
+    }
+
+    #[test]
+    fn status_labels_and_running_flag() {
+        let all = [
+            (Status::Idle, "Idle", false),
+            (Status::Scanning, "Scanning", true),
+            (Status::Planning, "Planning", true),
+            (Status::Applying, "Applying", true),
+            (Status::Done, "Done", false),
+            (Status::Cancelled, "Cancelled", false),
+            (Status::Failed, "Failed", false),
+        ];
+        for (status, label, running) in all {
+            assert_eq!(status.label(), label);
+            assert_eq!(status.is_running(), running);
+        }
+    }
+
+    #[test]
+    fn assignment_badges_and_icons() {
+        assert_eq!(Assignment::Movies.badge(), "Movies");
+        assert_eq!(Assignment::Tv.badge(), "TV Shows");
+        assert_eq!(Assignment::Unassigned.badge(), "Unassigned");
+        assert_eq!(Assignment::Movies.icon(), Icon::Clapper);
+        assert_eq!(Assignment::Tv.icon(), Icon::Monitor);
+        assert_eq!(Assignment::Unassigned.icon(), Icon::Folder);
+        for assignment in [Assignment::Movies, Assignment::Tv, Assignment::Unassigned] {
+            for palette in [Palette::LIGHT, Palette::DARK] {
+                let (fg, bg) = assignment.badge_colors(&palette);
+                assert_ne!(fg, bg);
+            }
+        }
+    }
+
+    #[test]
+    fn palette_follows_visuals() {
+        assert!(Palette::of(&egui::Visuals::dark()).dark);
+        assert!(!Palette::of(&egui::Visuals::light()).dark);
+    }
+
+    #[test]
+    fn refresh_lists_sorted_children() {
+        let scratch = Scratch::new();
+        std::fs::create_dir(scratch.path().join("b_show")).unwrap();
+        std::fs::create_dir(scratch.path().join("a_movie")).unwrap();
+        let app = app_with_source(scratch.path());
+
+        assert_eq!(app.children.len(), 2);
+        assert!(app.children[0].ends_with("a_movie"));
+        assert!(app.children[1].ends_with("b_show"));
+        assert_eq!(app.assignment_counts(), (0, 0, 2));
+        assert!(app.error.is_none());
+    }
+
+    #[test]
+    fn refresh_reports_bad_source_and_ignores_empty() {
+        let mut app = GuiApp::default();
+        app.refresh_children();
+        assert!(app.children.is_empty());
+        assert!(app.error.is_none());
+
+        app.source = "definitely/not/a/real/dir".to_string();
+        app.refresh_children();
+        assert!(app.error.as_deref().unwrap().contains("not a directory"));
+    }
+
+    #[test]
+    fn marking_selection_updates_counts() {
+        let scratch = Scratch::new();
+        for name in ["one", "two", "three"] {
+            std::fs::create_dir(scratch.path().join(name)).unwrap();
+        }
+        let mut app = app_with_source(scratch.path());
+        app.selected = app.children.iter().take(2).cloned().collect();
+
+        app.mark_selected(Assignment::Movies);
+        assert_eq!(app.assignment_counts(), (2, 0, 1));
+        app.mark_selected(Assignment::Tv);
+        assert_eq!(app.assignment_counts(), (0, 2, 1));
+        app.mark_selected(Assignment::Unassigned);
+        assert_eq!(app.assignment_counts(), (0, 0, 3));
+    }
+
+    #[test]
+    fn input_error_covers_source_and_destination() {
+        let scratch = Scratch::new();
+        let mut app = app_with_source(scratch.path());
+        assert!(app.input_error().is_none());
+
+        // Destination that does not exist yet but has an existing parent.
+        app.dest = scratch.path().join("library").display().to_string();
+        assert!(app.input_error().is_none());
+
+        // Destination that is a file.
+        let file = scratch.path().join("file.txt");
+        std::fs::write(&file, b"x").unwrap();
+        app.dest = file.display().to_string();
+        assert!(app
+            .input_error()
+            .unwrap()
+            .contains("destination is not a directory"));
+
+        // Destination whose nearest existing ancestor is a file.
+        app.dest = file.join("child").join("grandchild").display().to_string();
+        assert!(app
+            .input_error()
+            .unwrap()
+            .contains("destination parent is not a directory"));
+
+        // Bad source wins.
+        app.source = "definitely/not/a/real/dir".to_string();
+        assert!(app.input_error().unwrap().contains("not a directory"));
+    }
+
+    #[test]
+    fn can_start_needs_an_assignment() {
+        let scratch = Scratch::new();
+        std::fs::create_dir(scratch.path().join("movie")).unwrap();
+        let mut app = app_with_source(scratch.path());
+        assert!(!app.can_start());
+
+        app.selected = app.children.iter().cloned().collect();
+        app.mark_selected(Assignment::Movies);
+        assert!(app.can_start());
+    }
+
+    #[test]
+    fn format_event_covers_every_variant() {
+        let p = |s: &str| PathBuf::from(s);
+        let cases = [
+            (LogEvent::Scanning, "SCANNING"),
+            (LogEvent::JobStarted(p("a")), "started"),
+            (LogEvent::JobFinished(p("a")), "finished"),
+            (LogEvent::CreateDir(p("a")), "CREATE"),
+            (
+                LogEvent::PlannedMove {
+                    from: p("a"),
+                    to: p("b"),
+                },
+                "MOVE",
+            ),
+            (
+                LogEvent::Moved {
+                    from: p("a"),
+                    to: p("b"),
+                },
+                "->",
+            ),
+            (
+                LogEvent::Skipped {
+                    path: p("a"),
+                    reason: "exists".into(),
+                },
+                "SKIP",
+            ),
+            (
+                LogEvent::Failed {
+                    path: p("a"),
+                    reason: "boom".into(),
+                },
+                "FAIL",
+            ),
+            (
+                LogEvent::Finished {
+                    moved: 1,
+                    merged: 2,
+                    skipped: 3,
+                    failed: 4,
+                    cancelled: false,
+                },
+                "Summary: 1 moved, 2 merged, 3 skipped",
+            ),
+        ];
+        for (event, expected) in cases {
+            assert!(format_event(&event).contains(expected), "{event:?}");
+        }
+    }
+
+    #[test]
+    fn log_and_status_colors_are_distinct() {
+        let visuals = egui::Visuals::dark();
+        let p = Palette::DARK;
+        assert_eq!(log_line_color("FAIL x", &p, &visuals), visuals.error_fg_color);
+        assert_eq!(log_line_color("SKIP x", &p, &visuals), visuals.warn_fg_color);
+        assert_eq!(log_line_color("Summary: x", &p, &visuals), p.accent);
+        assert_eq!(log_line_color("MOVE x", &p, &visuals), p.text);
+
+        assert_eq!(status_color(Status::Done, &p, &visuals), p.ok);
+        assert_eq!(status_color(Status::Failed, &p, &visuals), visuals.error_fg_color);
+        assert_eq!(status_color(Status::Cancelled, &p, &visuals), visuals.warn_fg_color);
+        assert_eq!(status_color(Status::Idle, &p, &visuals), p.accent);
+    }
+
+    fn attach_run(app: &mut GuiApp) -> std::sync::mpsc::Sender<LogEvent> {
+        let (tx, rx) = channel();
+        app.run = Some(RunHandle {
+            receiver: rx,
+            cancel: CancelToken::new(),
+            join: None,
+        });
+        tx
+    }
+
+    #[test]
+    fn drain_events_tracks_status_and_summary() {
+        let mut app = GuiApp::default();
+        let tx = attach_run(&mut app);
+
+        tx.send(LogEvent::Scanning).unwrap();
+        tx.send(LogEvent::PlannedMove {
+            from: "a".into(),
+            to: "b".into(),
+        })
+        .unwrap();
+        app.drain_events();
+        assert_eq!(app.status, Status::Planning);
+        assert_eq!(app.log.len(), 2);
+        assert!(app.run.is_some());
+
+        app.apply = true;
+        tx.send(LogEvent::Moved {
+            from: "a".into(),
+            to: "b".into(),
+        })
+        .unwrap();
+        app.drain_events();
+        assert_eq!(app.status, Status::Applying);
+
+        tx.send(LogEvent::Finished {
+            moved: 1,
+            merged: 0,
+            skipped: 0,
+            failed: 0,
+            cancelled: false,
+        })
+        .unwrap();
+        app.drain_events();
+        assert_eq!(app.status, Status::Done);
+        assert_eq!(app.last_summary, Some((1, 0, 0, 0, false)));
+        assert!(app.run.is_none());
+    }
+
+    #[test]
+    fn drain_events_maps_failed_and_cancelled() {
+        for (failed, cancelled, expected) in [
+            (1, false, Status::Failed),
+            (0, true, Status::Cancelled),
+        ] {
+            let mut app = GuiApp::default();
+            let tx = attach_run(&mut app);
+            tx.send(LogEvent::Finished {
+                moved: 0,
+                merged: 0,
+                skipped: 0,
+                failed,
+                cancelled,
+            })
+            .unwrap();
+            app.drain_events();
+            assert_eq!(app.status, expected);
+        }
+    }
+
+    #[test]
+    fn drain_events_ends_run_when_sender_disconnects() {
+        let mut app = GuiApp::default();
+        drop(attach_run(&mut app));
+        app.drain_events();
+        assert!(app.run.is_none());
+    }
+
+    #[test]
+    fn stop_cancels_the_active_run() {
+        let mut app = GuiApp::default();
+        let _tx = attach_run(&mut app);
+        app.stop();
+        assert!(app.run.as_ref().unwrap().cancel.is_cancelled());
+
+        // No active run: nothing to do.
+        let mut idle = GuiApp::default();
+        idle.stop();
+    }
+
+    #[test]
+    fn start_rejects_invalid_input_and_empty_selection() {
+        let mut app = GuiApp::default();
+        app.start();
+        assert!(app.error.is_some());
+        assert!(app.run.is_none());
+
+        let scratch = Scratch::new();
+        std::fs::create_dir(scratch.path().join("movie")).unwrap();
+        let mut app = app_with_source(scratch.path());
+        app.start();
+        assert!(app.run.is_none(), "nothing assigned, so nothing runs");
+    }
+
+    #[test]
+    fn preview_run_completes_without_touching_files() {
+        let scratch = Scratch::new();
+        let movie = scratch.path().join("Inception.2010.1080p");
+        std::fs::create_dir(&movie).unwrap();
+        std::fs::write(movie.join("Inception.2010.1080p.mkv"), b"data").unwrap();
+
+        let mut app = app_with_source(scratch.path());
+        app.selected = app.children.iter().cloned().collect();
+        app.mark_selected(Assignment::Movies);
+        app.apply = false;
+        app.start();
+        assert!(app.run.is_some());
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while app.run.is_some() && Instant::now() < deadline {
+            app.drain_events();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(app.run.is_none(), "run did not finish in time");
+        assert!(matches!(app.status, Status::Done | Status::Failed));
+        assert!(!app.log.is_empty());
+        assert!(movie.join("Inception.2010.1080p.mkv").exists());
+    }
+
+    /// Renders every card headlessly so the layout and painting code is
+    /// exercised in both themes and in the main states.
+    #[test]
+    fn renders_all_states_in_both_themes() {
+        let scratch = Scratch::new();
+        for name in ["Inception.2010", "Severance.S01", "Interstellar.2014"] {
+            std::fs::create_dir(scratch.path().join(name)).unwrap();
+        }
+
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            ctx.set_theme(theme);
+
+            let mut app = app_with_source(scratch.path());
+            app.dest = scratch.path().join("library").display().to_string();
+            app.selected = app.children.iter().take(2).cloned().collect();
+            app.assignments
+                .insert(app.children[0].clone(), Assignment::Movies);
+            app.assignments
+                .insert(app.children[1].clone(), Assignment::Tv);
+            app.log = vec![
+                "MOVE    a -> b".to_string(),
+                "SKIP    c (exists)".to_string(),
+                "FAIL    d (boom)".to_string(),
+                "Summary: 1 moved, 0 merged, 1 skipped, 1 failed, cancelled=false".to_string(),
+            ];
+            app.last_summary = Some((1, 0, 1, 1, true));
+            app.error = Some("something went wrong".to_string());
+            app.extra_height = 120.0;
+
+            // Idle, preview mode / apply mode (shows the warning) / running.
+            for (apply, running) in [(false, false), (true, false), (true, true)] {
+                app.apply = apply;
+                app.status = if running { Status::Applying } else { Status::Done };
+                let tx = running.then(|| attach_run(&mut app));
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(940.0, 860.0),
+                    )),
+                    ..Default::default()
+                };
+                let _ = ctx.run_ui(input, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        widgets::theme_switcher(ui);
+                        app.folders_card(ui, running);
+                        app.assign_card(ui, running);
+                        app.run_card(ui, running);
+                        app.log_card(ui, running);
+                    });
+                });
+                drop(tx);
+                app.run = None;
+            }
+
+            // Empty list placeholder.
+            let mut empty = GuiApp::default();
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                empty.assign_card(ui, false);
+                empty.log_card(ui, false);
+            });
+        }
+    }
+}
