@@ -15,6 +15,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread::JoinHandle;
 
 use eframe::egui;
+use media_manager::update::{self, UpdateInfo};
 use media_manager::{CancelToken, LibraryKind, LogEvent, WorkItem};
 
 #[path = "gui/theme.rs"]
@@ -28,6 +29,8 @@ use widgets::{Btn, BtnStyle, Icon};
 const ROW_HEIGHT: f32 = 42.0;
 /// The page scrolls as a whole, so the log gets a fixed height.
 const LOG_HEIGHT: f32 = 240.0;
+/// How often a long-running window re-checks GitHub for a newer release.
+const UPDATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Assignment {
@@ -112,6 +115,11 @@ pub struct GuiApp {
     error: Option<String>,
     /// Spare window height shared by the file list and the log.
     extra_height: f32,
+    /// Newer release found by the background checker, shown as a banner.
+    update: Option<UpdateInfo>,
+    /// Version the user dismissed; the banner stays hidden for it.
+    dismissed_update: Option<String>,
+    update_rx: Option<Receiver<UpdateInfo>>,
 }
 
 impl Default for GuiApp {
@@ -129,15 +137,67 @@ impl Default for GuiApp {
             last_summary: None,
             error: None,
             extra_height: 0.0,
+            update: None,
+            dismissed_update: None,
+            update_rx: None,
         }
     }
 }
 
 impl GuiApp {
     /// Builds the app and installs Manrope, the palettes and the text styles.
+    /// Also starts the periodic GitHub update check unless the user opted out.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::install(&cc.egui_ctx);
-        GuiApp::default()
+        let mut app = GuiApp::default();
+        if !update::disabled_by_env() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let ctx = cc.egui_ctx.clone();
+            update::spawn_periodic(
+                update::CURRENT_VERSION,
+                UPDATE_CHECK_INTERVAL,
+                move |info| {
+                    // A closed channel means the window is gone: stop checking.
+                    let delivered = tx.send(info).is_ok();
+                    ctx.request_repaint();
+                    delivered
+                },
+            );
+            app.update_rx = Some(rx);
+        }
+        app
+    }
+
+    /// Picks up releases found by the background checker.
+    fn drain_updates(&mut self) {
+        let Some(rx) = &self.update_rx else { return };
+        let pending: Vec<UpdateInfo> = rx.try_iter().collect();
+        for info in pending {
+            self.offer_update(info);
+        }
+    }
+
+    /// Shows `info` unless the user already dismissed that version or a
+    /// same-or-newer one is already on display.
+    fn offer_update(&mut self, info: UpdateInfo) {
+        if !update::is_newer(&info.version, update::CURRENT_VERSION)
+            || self.dismissed_update.as_deref() == Some(info.version.as_str())
+        {
+            return;
+        }
+        let already_showing = self
+            .update
+            .as_ref()
+            .is_some_and(|shown| !update::is_newer(&info.version, &shown.version));
+        if !already_showing {
+            self.update = Some(info);
+        }
+    }
+
+    fn dismiss_update(&mut self) {
+        if let Some(info) = self.update.take() {
+            self.dismissed_update = Some(info.version);
+        }
     }
 
     fn assignment_counts(&self) -> (usize, usize, usize) {
@@ -411,6 +471,53 @@ fn log_line_color(line: &str, p: &Palette, visuals: &egui::Visuals) -> egui::Col
 }
 
 impl GuiApp {
+    /// "A newer version is available" banner with a link to the release.
+    fn update_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(info) = self.update.clone() else {
+            return;
+        };
+        let p = Palette::of(ui.visuals());
+        let mut open = false;
+        let mut dismiss = false;
+        widgets::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("Version {} is available", info.version))
+                        .font(bold_font(14.0))
+                        .color(p.accent),
+                );
+                ui.label(
+                    egui::RichText::new(format!("You are running {}.", update::CURRENT_VERSION))
+                        .color(p.weak),
+                );
+                widgets::right(ui, |ui| {
+                    // Right-to-left: the primary action sits at the far right.
+                    if Btn::new("View release", BtnStyle::Primary)
+                        .small()
+                        .show(ui)
+                        .on_hover_text(&info.url)
+                        .clicked()
+                    {
+                        open = true;
+                    }
+                    if Btn::new("Dismiss", BtnStyle::Link)
+                        .small()
+                        .show(ui)
+                        .clicked()
+                    {
+                        dismiss = true;
+                    }
+                });
+            });
+        });
+        if open {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(&info.url));
+        }
+        if dismiss {
+            self.dismiss_update();
+        }
+    }
+
     fn folders_card(&mut self, ui: &mut egui::Ui, running: bool) {
         let p = Palette::of(ui.visuals());
         widgets::card(ui, |ui| {
@@ -828,6 +935,7 @@ fn assignment_row(
 impl eframe::App for GuiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
+        self.drain_updates();
         if self.run.is_some() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
@@ -853,6 +961,7 @@ impl eframe::App for GuiApp {
                                 ui.horizontal(|ui| {
                                     widgets::right(ui, widgets::theme_switcher);
                                 });
+                                self.update_banner(ui);
                                 self.folders_card(ui, running);
                                 self.assign_card(ui, running);
                                 self.run_card(ui, running);
@@ -946,6 +1055,59 @@ mod tests {
                 assert_ne!(fg, bg);
             }
         }
+    }
+
+    fn release(version: &str) -> UpdateInfo {
+        UpdateInfo {
+            version: version.to_string(),
+            url: format!("https://github.com/bolorundurowb/media-manager/releases/tag/v{version}"),
+        }
+    }
+
+    #[test]
+    fn offer_update_ignores_current_and_older_versions() {
+        let mut app = GuiApp::default();
+        app.offer_update(release(update::CURRENT_VERSION));
+        app.offer_update(release("0.0.1"));
+        assert!(app.update.is_none());
+    }
+
+    #[test]
+    fn offer_update_keeps_the_newest_release() {
+        let mut app = GuiApp::default();
+        app.offer_update(release("99.0.0"));
+        assert_eq!(app.update.as_ref().unwrap().version, "99.0.0");
+
+        app.offer_update(release("98.0.0"));
+        assert_eq!(app.update.as_ref().unwrap().version, "99.0.0");
+
+        app.offer_update(release("100.0.0"));
+        assert_eq!(app.update.as_ref().unwrap().version, "100.0.0");
+    }
+
+    #[test]
+    fn dismissed_update_stays_hidden_until_a_newer_one_ships() {
+        let mut app = GuiApp::default();
+        app.offer_update(release("99.0.0"));
+        app.dismiss_update();
+        assert!(app.update.is_none());
+
+        // The periodic checker finds the same release again: stay quiet.
+        app.offer_update(release("99.0.0"));
+        assert!(app.update.is_none());
+
+        app.offer_update(release("99.1.0"));
+        assert_eq!(app.update.as_ref().unwrap().version, "99.1.0");
+    }
+
+    #[test]
+    fn drain_updates_reads_the_checker_channel() {
+        let mut app = GuiApp::default();
+        let (tx, rx) = channel();
+        app.update_rx = Some(rx);
+        tx.send(release("99.0.0")).unwrap();
+        app.drain_updates();
+        assert_eq!(app.update.as_ref().unwrap().version, "99.0.0");
     }
 
     #[test]
@@ -1284,6 +1446,7 @@ mod tests {
             app.last_summary = Some((1, 0, 1, 1, true));
             app.error = Some("something went wrong".to_string());
             app.extra_height = 120.0;
+            app.update = Some(release("99.0.0"));
 
             // Idle, preview mode / apply mode (shows the warning) / running.
             for (apply, running) in [(false, false), (true, false), (true, true)] {
@@ -1304,6 +1467,7 @@ mod tests {
                 render(&ctx, input, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         widgets::theme_switcher(ui);
+                        app.update_banner(ui);
                         app.folders_card(ui, running);
                         app.assign_card(ui, running);
                         app.run_card(ui, running);
