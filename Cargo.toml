@@ -1,6 +1,6 @@
 [package]
 name = "media-manager"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "In-place Jellyfin movie and TV library normalizer"
 license = "MIT"
@@ -20,19 +20,19 @@ required-features = ["gui"]
 gui = ["dep:eframe", "dep:egui", "dep:rfd", "dep:ureq", "dep:serde_json"]
 
 [dependencies]
-clap = { version = "4.6.6", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
 ctrlc = "3.5.2"
 regex = "1.13.1"
 tracing = "0.1.44"
-unicode-normalization = "0.1.25"
+unicode-normalization = "0.1.26"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # GUI (Phase 7), behind the `gui` feature.
-eframe = { version = "0.36.1", optional = true }
-egui = { version = "0.36.1", optional = true }
+eframe = { version = "0.37.0", optional = true }
+egui = { version = "0.37.0", optional = true }
 rfd = { version = "0.17.2", optional = true }
 # Update check against the GitHub releases API (also GUI-only).
-ureq = { version = "3.4.2", optional = true }
+ureq = { version = "3.5.1", optional = true }
 serde_json = { version = "1.0.154", optional = true }
 rayon = "1.12.0"
 
