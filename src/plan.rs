@@ -8,7 +8,10 @@ use crate::parse::{
     episode_file_stem, extension_lower, movie_folder_name, parse_episode, season_folder_name,
     show_folder_name, version_label,
 };
-use crate::scan::{associated_subtitles, extra_files, is_subs_dir_name, list_subtitle_files};
+use crate::scan::{
+    associated_subtitles, episode_subtitle_suffix, extra_files, is_subs_dir_name,
+    list_subtitle_files, season_extra_files,
+};
 
 #[derive(Debug, Clone)]
 pub struct MoveOp {
@@ -185,10 +188,6 @@ fn plan_tv_group(root: &Path, group: TvShowGroup, plan: &mut Plan) {
                 plan_video_and_subs(plan, video, &dest, &mut claimed);
                 videos_ok += 1;
             }
-            if !folder.folder.loose {
-                let sources = plan_move_sources(plan);
-                log_unassociated_subs(&folder.folder.path, &folder.folder.videos, &sources, plan);
-            }
             if !folder.folder.loose && videos_ok == folder.folder.videos.len() && videos_ok > 0 {
                 plan_extras(
                     &folder.folder.path,
@@ -198,6 +197,132 @@ fn plan_tv_group(root: &Path, group: TvShowGroup, plan: &mut Plan) {
                     &mut claimed,
                 );
             }
+        }
+        // Plan sidecars after all episode destinations are known, including
+        // episodes already normalized by a previous run.
+        for folder in folders.iter().filter(|f| !f.folder.loose) {
+            plan_season_subtitles(
+                &folder.folder.path,
+                &season_dir,
+                &group.title,
+                *season,
+                plan,
+                &mut claimed,
+            );
+            for (extra, relative) in season_extra_files(&folder.folder.path) {
+                // Packs can include another season's bonuses, e.g.
+                // Season 2/Extras - Season 1. Honor that explicit season.
+                let bonus_name = extra
+                    .strip_prefix(&folder.folder.path)
+                    .ok()
+                    .and_then(|p| p.components().next())
+                    .and_then(|c| c.as_os_str().to_str())
+                    .unwrap_or("");
+                let bonus_season =
+                    crate::parse::parse_media_name(bonus_name, crate::parse::LibraryKind::Tv)
+                        .ok()
+                        .and_then(|p| p.season);
+                let bonus_dir = bonus_season
+                    .map(|s| show_dir.join(season_folder_name(s)))
+                    .unwrap_or_else(|| season_dir.clone());
+                let relative = if bonus_season.is_some() {
+                    relative.components().skip(1).collect::<PathBuf>()
+                } else {
+                    relative
+                };
+                let dest = bonus_dir.join("Extras").join(relative);
+                if extra == dest {
+                    continue;
+                }
+                if claim_dest(plan, &mut claimed, &extra, &dest) {
+                    if let Some(parent) = dest.parent() {
+                        plan.dirs.push(parent.to_path_buf());
+                    }
+                    plan.moves.push(MoveOp {
+                        from: extra,
+                        to: dest,
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn plan_season_subtitles(
+    folder: &Path,
+    season_dir: &Path,
+    title: &str,
+    season: u8,
+    plan: &mut Plan,
+    claimed: &mut HashSet<String>,
+) {
+    use crate::parse::{identity_key, is_video_path, parse_media_name, LibraryKind};
+    let mut targets: Vec<PathBuf> = plan
+        .moves
+        .iter()
+        .map(|m| m.to.clone())
+        .filter(|p| p.parent() == Some(season_dir) && is_video_path(p))
+        .collect();
+    if let Ok(entries) = std::fs::read_dir(season_dir) {
+        targets.extend(
+            entries
+                .flatten()
+                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .map(|e| e.path())
+                .filter(|p| is_video_path(p)),
+        );
+    }
+    targets.sort();
+    targets.dedup();
+    for sub in list_subtitle_files(folder) {
+        if plan.moves.iter().any(|m| m.from == sub) || plan.skips.iter().any(|s| s.path == sub) {
+            continue;
+        }
+        let name = sub.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let ep = parse_episode(name);
+        let same_show = parse_media_name(name, LibraryKind::Tv)
+            .is_ok_and(|p| identity_key(&p.title) == identity_key(title));
+        let matches: Vec<_> = targets
+            .iter()
+            .filter(|p| {
+                same_show
+                    && ep.as_ref().is_some_and(|e| e.season == season)
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .and_then(parse_episode)
+                        == ep
+            })
+            .collect();
+        if matches.len() != 1 {
+            plan.skip(
+                sub,
+                "unassociated or ambiguous episode subtitle; leaving in place",
+            );
+            continue;
+        }
+        let video = matches[0];
+        let stem = video.file_stem().and_then(|n| n.to_str()).unwrap_or("");
+        let suffix = crate::scan::subtitle_suffix(name, stem)
+            .map(str::to_owned)
+            .unwrap_or_else(|| episode_subtitle_suffix(name));
+        let Some(ext) = extension_lower(&sub) else {
+            continue;
+        };
+        let dir = if sub.parent() == Some(folder) {
+            season_dir.to_path_buf()
+        } else {
+            season_dir.join("subs")
+        };
+        let dest = dir.join(format!("{stem}{suffix}.{ext}"));
+        if sub == dest {
+            continue;
+        }
+        if claim_dest(plan, claimed, &sub, &dest) {
+            plan.dirs.push(dir);
+            plan.moves.push(MoveOp {
+                from: sub,
+                to: dest,
+            });
         }
     }
 }

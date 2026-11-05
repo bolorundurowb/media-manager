@@ -10,7 +10,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::parse::{is_extra_filename, is_sub_path, is_video_path};
+use crate::parse::{
+    bare_season_folder, is_extra_filename, is_sub_path, is_video_path, parse_media_name,
+    LibraryKind,
+};
 
 /// Maximum depth for discovering nested media folders under the root.
 const MAX_DISCOVERY_DEPTH: u8 = 8;
@@ -64,7 +67,7 @@ pub(crate) fn scan_child(path: &Path) -> io::Result<Vec<MediaFolder>> {
     }
 
     let mut out = Vec::new();
-    if has_direct_video(path)? {
+    if has_direct_video(path)? || is_season_auxiliary_folder(path) {
         let mut videos = Vec::new();
         collect_videos(path, 0, &mut videos)?;
         videos.retain(|p| {
@@ -73,7 +76,7 @@ pub(crate) fn scan_child(path: &Path) -> io::Result<Vec<MediaFolder>> {
                 .map(|n| !is_extra_filename(n))
                 .unwrap_or(true)
         });
-        if !videos.is_empty() {
+        if !videos.is_empty() || is_season_auxiliary_folder(path) {
             out.push(MediaFolder {
                 path: path.to_path_buf(),
                 videos,
@@ -123,11 +126,13 @@ fn discover_media_folders(dir: &Path, depth: u8, out: &mut Vec<MediaFolder>) -> 
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if name == "subs" || name == "subtitles" {
+        if is_subs_dir_name(&name) || is_extras_dir_name(&name) {
             continue;
         }
 
-        match has_direct_video(&path) {
+        match has_direct_video(&path)
+            .map(|has_video| has_video || is_season_auxiliary_folder(&path))
+        {
             Ok(true) => {
                 let mut videos = Vec::new();
                 if let Err(err) = collect_videos(&path, 0, &mut videos) {
@@ -139,7 +144,7 @@ fn discover_media_folders(dir: &Path, depth: u8, out: &mut Vec<MediaFolder>) -> 
                         .map(|n| !is_extra_filename(n))
                         .unwrap_or(true)
                 });
-                if videos.is_empty() {
+                if videos.is_empty() && !is_season_auxiliary_folder(&path) {
                     tracing::debug!(path = %path.display(), "no video files; skipping");
                     continue;
                 }
@@ -212,7 +217,7 @@ fn collect_videos(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) -> io::Result<(
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
-            if name == "subs" || name == "subtitles" {
+            if is_subs_dir_name(&name) || is_extras_dir_name(&name) {
                 continue;
             }
             collect_videos(&path, depth + 1, out)?;
@@ -255,8 +260,7 @@ pub fn associated_subtitles(video: &Path) -> Vec<AssociatedSub> {
     let mut seen = std::collections::HashSet::new();
 
     collect_subs_in_dir(parent, stem, false, false, &mut found, &mut seen);
-    for name in ["subs", "subtitles"] {
-        let nested_root = parent.join(name);
+    for nested_root in subtitle_dirs(parent) {
         if !nested_root.is_dir() {
             continue;
         }
@@ -332,8 +336,7 @@ fn collect_subs_in_dir(
 pub fn list_subtitle_files(media_folder: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     collect_all_subs_in_dir(media_folder, &mut out);
-    for name in ["subs", "subtitles"] {
-        let nested_root = media_folder.join(name);
+    for nested_root in subtitle_dirs(media_folder) {
         if !nested_root.is_dir() {
             continue;
         }
@@ -387,7 +390,83 @@ pub fn extra_files(dir: &Path) -> Vec<PathBuf> {
 
 pub fn is_subs_dir_name(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    n == "subs" || n == "subtitles"
+    matches!(
+        n.split(|c: char| !c.is_ascii_alphanumeric()).next(),
+        Some("subs" | "subtitles")
+    )
+}
+
+pub fn is_extras_dir_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    matches!(
+        lower.split(|c: char| !c.is_ascii_alphanumeric()).next(),
+        Some("extra" | "extras" | "featurettes")
+    ) || matches!(lower.as_str(), "behind the scenes" | "deleted scenes")
+}
+
+fn subtitle_dirs(parent: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<_> = fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter(|e| is_subs_dir_name(&e.file_name().to_string_lossy()))
+        .map(|e| e.path())
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+// Retain the season context after the episodes have moved in an earlier run.
+fn is_season_auxiliary_folder(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if bare_season_folder(name).is_none() && parse_media_name(name, LibraryKind::Tv).is_err() {
+        return false;
+    }
+    !list_subtitle_files(path).is_empty() || !season_extra_files(path).is_empty()
+}
+
+/// Bonus content retains its tree beneath the season's Extras directory.
+pub fn season_extra_files(folder: &Path) -> Vec<(PathBuf, PathBuf)> {
+    fn collect(dir: &Path, relative: &Path, out: &mut Vec<(PathBuf, PathBuf)>, depth: u8) {
+        if depth > MAX_VIDEO_DEPTH {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let rel = relative.join(entry.file_name());
+            if kind.is_dir() {
+                collect(&entry.path(), &rel, out, depth + 1);
+            } else if kind.is_file() {
+                out.push((entry.path(), rel));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(folder) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                && is_extras_dir_name(&entry.file_name().to_string_lossy())
+            {
+                let name = entry.file_name();
+                let relative = if name.to_string_lossy().eq_ignore_ascii_case("extra")
+                    || name.to_string_lossy().eq_ignore_ascii_case("extras")
+                {
+                    PathBuf::new()
+                } else {
+                    PathBuf::from(name)
+                };
+                collect(&entry.path(), &relative, &mut out, 0);
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 /// If `filename` is a subtitle associated with `video_stem`, return the suffix
@@ -478,6 +557,31 @@ fn subtitle_flag(token: &str) -> Option<&'static str> {
         "default" => Some("default"),
         _ => None,
     }
+}
+
+/// An explicit language label at the end of an episode subtitle name.
+/// Ignore episode titles while retaining language and accessibility flags.
+pub(crate) fn episode_subtitle_suffix(filename: &str) -> String {
+    let stem = crate::parse::strip_extension(filename);
+    let mut flags = Vec::new();
+    for token in stem
+        .rsplit(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+    {
+        if let Some(flag) = subtitle_flag(token) {
+            flags.push(flag);
+        } else if let Some(language) = language_code(token) {
+            let mut suffix = format!(".{language}");
+            for flag in flags.into_iter().rev() {
+                suffix.push('.');
+                suffix.push_str(flag);
+            }
+            return suffix;
+        } else {
+            break;
+        }
+    }
+    String::new()
 }
 
 /// Names and ISO 639-1 codes. Matched as whole tokens; unknown names are
