@@ -30,6 +30,15 @@ TV shows:
 Subtitles are renamed alongside their video, and other files (`.nfo`,
 artwork) follow once the video has moved. Loose video files are handled too.
 
+TV subtitles can also match by show, season and episode when their episode
+titles differ from the video filename. Subtitle folders such as `Subs Season
+Two` and `Subs you don't need` are recognized. Language labels and flags are
+preserved. Bonus folders (`Extra`, `Extras`, `Featurettes`) move beneath the
+season's `Extras` directory, retaining their filenames and nested structure.
+An explicit bonus season, such as `Extras - Season 1`, takes precedence over
+the enclosing season. Later runs can recover these files even when the
+episodes have already moved. Unmatched subtitles and collisions stay in place.
+
 ## Desktop app
 
 Run `media-manager-gui`.
