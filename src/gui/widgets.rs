@@ -3,7 +3,7 @@
 
 use eframe::egui::{
     self, vec2, Align, Color32, CornerRadius, FontId, Frame, Layout, Margin, Painter, Pos2, Rect,
-    RichText, Sense, Shape, Stroke, Ui, WidgetInfo, WidgetType,
+    RichText, Role, Sense, Shape, Stroke, Ui, WidgetInfo,
 };
 
 use super::theme::{bold_font, Palette};
@@ -320,7 +320,7 @@ impl<'a> Btn<'a> {
             );
         }
 
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, self.enabled, self.label));
+        response.widget_info(|| WidgetInfo::labeled(Role::Button, self.enabled, self.label));
         response
     }
 }
@@ -364,7 +364,7 @@ pub fn path_input(
                             .frame(Frame::NONE)
                             .desired_width(inner_w)
                             .min_size(vec2(inner_w, H))
-                            .vertical_align(Align::Center)
+                            .align(egui::Align2::LEFT_CENTER)
                             .hint_text(hint),
                     ),
                 );
@@ -423,8 +423,7 @@ pub fn radio(ui: &mut Ui, selected: bool, label: &str, enabled: bool) -> egui::R
         galley,
         color,
     );
-    response
-        .widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, enabled, selected, label));
+    response.widget_info(|| WidgetInfo::selected(Role::RadioButton, enabled, selected, label));
     response
 }
 
